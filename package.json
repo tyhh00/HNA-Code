@@ -21,7 +21,8 @@
     "test:settings": "node test/settings.mjs",
     "test:multiwindow": "node test/multiwindow.mjs",
     "test:tabs": "node test/tabs.mjs",
-    "test:workspaces": "node test/workspaces.mjs"
+    "test:workspaces": "node test/workspaces.mjs",
+    "test:sidebar": "node test/sidebar.mjs"
   },
   "dependencies": {
     "@lydell/node-pty": "^1.1.0",

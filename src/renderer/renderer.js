@@ -57,6 +57,7 @@ const settings = {
   launch: { command: 'claude', shell: 'auto' },
   doneSound: { enabled: false, path: null },
   permissionSound: { enabled: false, path: null },
+  sidebarCollapsed: false,
 };
 const persistSettings = () => window.grid.settingsChanged(settings);
 
@@ -178,6 +179,7 @@ function setActive(pane, sid) {
   const rec = terms.get(sid);
   if (rec && rec.opened) { rec.fit.fit(); window.grid.resize(sid, rec.term.cols, rec.term.rows); }
   savePanes();
+  scheduleSidebar();
 }
 
 function addTab(pane, sid, { activate = false } = {}) {
@@ -194,6 +196,7 @@ function addTab(pane, sid, { activate = false } = {}) {
   }
   if (activate || pane.active == null) setActive(pane, sid);
   else { rec.wrap.style.display = 'none'; renderTabs(pane); }
+  scheduleSidebar();
 }
 
 function closeTab(pane, sid) {
@@ -209,6 +212,7 @@ function closeTab(pane, sid) {
     else { const ns = String(seq++); createSession(ns, {}); addTab(pane, ns, { activate: true }); }
   } else { renderTabs(pane); }
   savePanes();
+  scheduleSidebar();
 }
 
 function startRename(nameEl, sid) {
@@ -228,6 +232,7 @@ function startRename(nameEl, sid) {
     nameEl.textContent = name;
     const rec = terms.get(sid); if (rec) rec.name = name;
     window.grid.rename(sid, name);
+    scheduleSidebar();
   };
 }
 
@@ -238,6 +243,7 @@ function setGlow(sid, s, { persist = true } = {}) {
   window.__glow[sid] = s;
   const pane = paneOf(sid);
   if (pane) { updatePaneGlow(pane); renderTabs(pane); }
+  scheduleSidebar();
   if (persist) window.grid.glowChanged(sid, s);
 }
 function clearGlow(sid) { const r = terms.get(sid); if (r && r.glow !== 'none') setGlow(sid, 'none'); }
@@ -260,7 +266,11 @@ function applyPerfClass() { document.body.classList.toggle('perf-on', !!settings
 window.grid.onSignal((sig) => {
   window.__signals.push(sig);
   const sid = String(sig.cell);
-  if (!terms.has(sid) || !settings.glowEnabled) return;
+  if (!terms.has(sid)) return;
+  const trec = terms.get(sid);
+  if (trec) trec.topicFetched = false; // may have new content -> refresh topic
+  scheduleSidebar();
+  if (!settings.glowEnabled) return;
   switch (sig.kind) {
     case 'stop':
     case 'idle':
@@ -285,6 +295,54 @@ function refitAll() {
 function savePanes() {
   const arr = panes.map((p) => (p ? { tabs: [...p.tabs], active: p.active } : { tabs: [], active: null }));
   window.grid.panesChanged(arr, seq);
+}
+
+// ---- Sidebar (needs-you-first session list) --------------------------------
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+let sbTimer = null;
+function scheduleSidebar() { clearTimeout(sbTimer); sbTimer = setTimeout(renderSidebar, 80); }
+function fetchTopic(sid) {
+  const rec = terms.get(sid);
+  if (!rec || rec.topicFetched) return;
+  rec.topicFetched = true;
+  window.grid.sessionTopic(sid).then((t) => { if (t && t !== rec.topic) { rec.topic = t; scheduleSidebar(); } });
+}
+function renderSidebar() {
+  const listEl = document.getElementById('sb-list');
+  if (!listEl) return;
+  const items = [];
+  panes.forEach((p, pi) => { if (p) p.tabs.forEach((sid, ti) => items.push({ sid, pi, ti })); });
+  const prio = (sid) => { const g = terms.get(sid)?.glow; return g === 'permission' ? 0 : g === 'idle' ? 1 : 2; };
+  items.sort((a, b) => prio(a.sid) - prio(b.sid) || a.pi - b.pi || a.ti - b.ti); // needs-you floated to top
+
+  let html = '', lastSection = null;
+  for (const { sid } of items) {
+    const rec = terms.get(sid); if (!rec) continue;
+    const section = rec.glow === 'none' ? 'Sessions' : 'Needs you';
+    if (section !== lastSection) { html += `<div class="sb-section">${section}</div>`; lastSection = section; }
+    const active = paneOf(sid)?.active === sid;
+    const topic = rec.topic ? escapeHtml(rec.topic) : '';
+    html += `<div class="sb-item${active ? ' active' : ''}" data-sid="${sid}">` +
+      `<span class="sb-dot ${rec.glow}"></span>` +
+      `<span class="sb-body"><span class="sb-name">${escapeHtml(rec.name)}</span>` +
+      (topic ? `<span class="sb-topic">${topic}</span>` : '') + '</span></div>';
+  }
+  listEl.innerHTML = html || '<div class="sb-section">No sessions</div>';
+  listEl.querySelectorAll('.sb-item').forEach((el) => {
+    el.addEventListener('click', () => { const p = paneOf(el.dataset.sid); if (p) setActive(p, el.dataset.sid); });
+  });
+  for (const { sid } of items) fetchTopic(sid);
+}
+function applySidebar() { document.body.classList.toggle('sb-collapsed', !!settings.sidebarCollapsed); }
+function initSidebar() {
+  document.getElementById('sb-toggle').addEventListener('click', () => {
+    settings.sidebarCollapsed = !settings.sidebarCollapsed;
+    applySidebar(); persistSettings();
+  });
+  applySidebar();
+  renderSidebar();
 }
 
 function setGridTemplate(rows, cols) {
@@ -496,6 +554,7 @@ function afterSettings() {
   initSettingsUI();
   initFolderUI();
   initWindowUI();
+  initSidebar();
   applyPerfClass();
 }
 

@@ -29,6 +29,7 @@ let settings = {
   launch: { command: 'claude', shell: 'auto' },
   autoHooks: true,
   perfView: false, // debug: sample per-cell CPU/RAM (off by default; sampler only runs when on)
+  sidebarCollapsed: false,
   doneSound: { enabled: false, path: null },
   permissionSound: { enabled: false, path: null },
 };
@@ -133,33 +134,49 @@ function launchBase() {
 }
 
 function claudeDir() { return process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'); }
-// A session is only resumable if Claude actually persisted a conversation for it (i.e. the user
-// sent at least one message). A session that was opened but never used has no real transcript,
-// and `claude --resume <id>` fails with "No conversation found". Guard against that.
-function isResumable(sessionId, cwd) {
-  if (!sessionId) return false;
+function sessionTranscriptFile(sessionId, cwd) {
+  if (!sessionId) return null;
   const projects = path.join(claudeDir(), 'projects');
-  let file = null;
   if (cwd) {
-    const guess = path.join(projects, cwd.replace(/[:\\/]/g, '-'), `${sessionId}.jsonl`);
-    try { if (fs.existsSync(guess)) file = guess; } catch (_) {}
+    const g = path.join(projects, cwd.replace(/[:\\/]/g, '-'), `${sessionId}.jsonl`);
+    try { if (fs.existsSync(g)) return g; } catch (_) {}
   }
-  if (!file) {
-    try {
-      for (const d of fs.readdirSync(projects)) {
-        const f = path.join(projects, d, `${sessionId}.jsonl`);
-        try { if (fs.existsSync(f)) { file = f; break; } } catch (_) {}
-      }
-    } catch (_) {}
-  }
-  if (!file) return false;
+  try {
+    for (const d of fs.readdirSync(projects)) {
+      const f = path.join(projects, d, `${sessionId}.jsonl`);
+      try { if (fs.existsSync(f)) return f; } catch (_) {}
+    }
+  } catch (_) {}
+  return null;
+}
+function readHead(file, bytes = 262144) {
   try {
     const fd = fs.openSync(file, 'r');
-    const buf = Buffer.alloc(262144);
-    const n = fs.readSync(fd, buf, 0, buf.length, 0);
+    const buf = Buffer.alloc(bytes);
+    const n = fs.readSync(fd, buf, 0, bytes, 0);
     fs.closeSync(fd);
-    return /"type"\s*:\s*"user"/.test(buf.toString('utf8', 0, n)); // a real user turn exists
-  } catch (_) { return false; }
+    return buf.toString('utf8', 0, n);
+  } catch (_) { return ''; }
+}
+// A session is only resumable if Claude actually persisted a conversation (a user turn exists).
+// A session opened but never used has no real transcript, and `claude --resume` errors.
+function isResumable(sessionId, cwd) {
+  const file = sessionTranscriptFile(sessionId, cwd);
+  return !!file && /"type"\s*:\s*"user"/.test(readHead(file));
+}
+// The first real user prompt from the transcript — used as the session's "topic".
+function firstPrompt(sessionId, cwd) {
+  const file = sessionTranscriptFile(sessionId, cwd);
+  if (!file) return null;
+  for (const line of readHead(file).split('\n')) {
+    if (!line.trim()) continue;
+    let o; try { o = JSON.parse(line); } catch (_) { continue; }
+    if (o.type !== 'user') continue;
+    const c = o.message && o.message.content;
+    let t = typeof c === 'string' ? c : (Array.isArray(c) ? (c.find((x) => x && x.type === 'text') || {}).text : null);
+    if (t && !/^\s*</.test(t)) return t.replace(/\s+/g, ' ').trim().slice(0, 120);
+  }
+  return null;
 }
 
 function createWindow(state) {
@@ -346,6 +363,11 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('state:get', (e) => { const rec = recFromEvent(e); return rec ? { ...rec.state, settings } : { settings }; });
   ipcMain.handle('window:info', (e) => { const rec = recFromEvent(e); return rec ? { windowId: rec.state.windowId, title: rec.state.title } : null; });
+  ipcMain.handle('session:topic', (e, index) => {
+    const rec = recFromEvent(e); if (!rec) return null;
+    const c = rec.state.cells[index];
+    return (c && c.sessionId) ? firstPrompt(c.sessionId, c.cwd) : null;
+  });
 
   ipcMain.handle('hooks:install', () => hooks.installHooks(HOOK_SCRIPT));
   ipcMain.handle('hooks:uninstall', () => hooks.uninstallHooks(HOOK_SCRIPT));

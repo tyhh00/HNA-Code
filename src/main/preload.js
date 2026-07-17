@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld('grid', {
 
   // request/response
   getState: () => ipcRenderer.invoke('state:get'),
+  sessionTopic: (cellId) => ipcRenderer.invoke('session:topic', cellId),
 
   // main -> renderer
   onData: (cb) => ipcRenderer.on('pty:data', (_e, cellId, data) => cb(cellId, data)),
