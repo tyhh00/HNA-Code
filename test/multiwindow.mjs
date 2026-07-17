@@ -21,23 +21,25 @@ const app = await launch();
 try {
   const w1 = await app.firstWindow();
   await w1.waitForFunction(() => window.__ready === true, { timeout: 15000 });
-  assert((await idOf(w1)) === 'w1', 'first window is w1');
+  const idA = await idOf(w1);
+  assert(idA === 'w1', 'first window keeps its pre-seeded id');
 
   await w1.locator('#new-window-btn').click();
   const w2 = await app.waitForEvent('window', { timeout: 10000 });
   await w2.waitForFunction(() => window.__ready === true, { timeout: 15000 });
-  assert((await idOf(w2)) === 'w2', 'second window is w2');
+  const idB = await idOf(w2);
+  assert(idB !== idA, `second window has a distinct id (A=${idA}, B=${idB})`);
   assert(app.windows().length === 2, 'two windows open');
 
   const rt = runtime(udd);
 
   // Glow is isolated per window.
-  await fireHook({ kind: 'idle', cell: 'w2#0', port: rt.port, token: rt.token });
+  await fireHook({ kind: 'idle', cell: `${idB}#0`, port: rt.port, token: rt.token });
   await sleep(800);
   assert((await glowOf(w2, 0)) === 'idle', 'w2 cell0 glows');
   assert((await glowOf(w1, 0)) === 'none', 'w1 cell0 does NOT glow (isolated)');
 
-  await fireHook({ kind: 'permission', cell: 'w1#1', port: rt.port, token: rt.token });
+  await fireHook({ kind: 'permission', cell: `${idA}#1`, port: rt.port, token: rt.token });
   await sleep(800);
   assert((await glowOf(w1, 1)) === 'permission', 'w1 cell1 glows blue');
   assert((await glowOf(w2, 1)) === 'none', 'w2 cell1 does NOT glow (isolated)');
@@ -50,10 +52,10 @@ try {
   await w1.keyboard.press('Enter');
   await sleep(600);
 
-  assert(fs.existsSync(path.join(udd, 'windows', 'w1.json')), 'w1.json exists');
-  assert(fs.existsSync(path.join(udd, 'windows', 'w2.json')), 'w2.json exists');
-  const w1state = JSON.parse(fs.readFileSync(path.join(udd, 'windows', 'w1.json'), 'utf8'));
-  assert(w1state.title === 'Left Monitor', 'w1 title persisted');
+  assert(fs.existsSync(path.join(udd, 'windows', `${idA}.json`)), 'window A state file exists');
+  assert(fs.existsSync(path.join(udd, 'windows', `${idB}.json`)), 'window B state file exists');
+  const w1state = JSON.parse(fs.readFileSync(path.join(udd, 'windows', `${idA}.json`), 'utf8'));
+  assert(w1state.title === 'Left Monitor', 'window A title persisted');
 
   await app.close();
 } catch (e) { fail = true; console.log('ERROR:', e.message); try { await app.close(); } catch (_) {} }

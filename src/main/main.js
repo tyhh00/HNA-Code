@@ -73,11 +73,30 @@ function windowStateFile(id) { return path.join(windowsDir(), `${id}.json`); }
 function defaultWindowState(id, n) {
   return { windowId: id, title: `window-${n}`, workspace: currentWorkspace, layout: { rows: 3, cols: 4 }, cells: {}, panes: [], seq: 0 };
 }
-function nextWindowNumber() {
+function wsHash(folder) {
+  const s = normFolder(folder);
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
+  return h.toString(36);
+}
+// Per-folder window numbering: each workspace's windows count from 1, ids namespaced by folder.
+function nextWindowInfo() {
+  const cw = normFolder(currentWorkspace);
   let max = 0;
-  for (const id of windows.keys()) { const m = /^w(\d+)$/.exec(id); if (m) max = Math.max(max, +m[1]); }
-  try { for (const f of fs.readdirSync(windowsDir())) { const m = /^w(\d+)\.json$/.exec(f); if (m) max = Math.max(max, +m[1]); } } catch (_) {}
-  return max + 1;
+  const scan = (st) => {
+    if (!st || normFolder(st.workspace) !== cw) return;
+    const m = /window-(\d+)/.exec(st.title || '');
+    if (m) max = Math.max(max, +m[1]);
+  };
+  for (const rec of windows.values()) scan(rec.state);
+  try {
+    for (const f of fs.readdirSync(windowsDir())) {
+      if (!f.endsWith('.json')) continue;
+      try { scan(JSON.parse(fs.readFileSync(path.join(windowsDir(), f), 'utf8'))); } catch (_) {}
+    }
+  } catch (_) {}
+  const n = max + 1;
+  return { n, id: `${wsHash(currentWorkspace)}-w${n}` };
 }
 function scheduleWindowSave(rec) {
   clearTimeout(rec.saveTimer);
@@ -111,6 +130,36 @@ function launchBase() {
   const v = process.env.CW_LAUNCH_CMD;
   if (v !== undefined) return v === 'SHELL' ? '' : v;
   return (settings.launch && settings.launch.command) || 'claude';
+}
+
+function claudeDir() { return process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'); }
+// A session is only resumable if Claude actually persisted a conversation for it (i.e. the user
+// sent at least one message). A session that was opened but never used has no real transcript,
+// and `claude --resume <id>` fails with "No conversation found". Guard against that.
+function isResumable(sessionId, cwd) {
+  if (!sessionId) return false;
+  const projects = path.join(claudeDir(), 'projects');
+  let file = null;
+  if (cwd) {
+    const guess = path.join(projects, cwd.replace(/[:\\/]/g, '-'), `${sessionId}.jsonl`);
+    try { if (fs.existsSync(guess)) file = guess; } catch (_) {}
+  }
+  if (!file) {
+    try {
+      for (const d of fs.readdirSync(projects)) {
+        const f = path.join(projects, d, `${sessionId}.jsonl`);
+        try { if (fs.existsSync(f)) { file = f; break; } } catch (_) {}
+      }
+    } catch (_) {}
+  }
+  if (!file) return false;
+  try {
+    const fd = fs.openSync(file, 'r');
+    const buf = Buffer.alloc(262144);
+    const n = fs.readSync(fd, buf, 0, buf.length, 0);
+    fs.closeSync(fd);
+    return /"type"\s*:\s*"user"/.test(buf.toString('utf8', 0, n)); // a real user turn exists
+  } catch (_) { return false; }
 }
 
 function createWindow(state) {
@@ -172,9 +221,9 @@ function openSavedWindows() {
   states.sort((a, b) => String(a.windowId).localeCompare(String(b.windowId), undefined, { numeric: true }));
 
   if (states.length === 0) {
-    const n = nextWindowNumber();
-    const st = defaultWindowState(`w${n}`, n);
-    writeJsonAtomic(windowStateFile(st.windowId), st);
+    const { n, id } = nextWindowInfo();
+    const st = defaultWindowState(id, n);
+    writeJsonAtomic(windowStateFile(id), st);
     states.push(st);
   }
   for (const st of states) if (!windows.has(st.windowId)) createWindow(st);
@@ -305,7 +354,9 @@ app.whenReady().then(async () => {
     const rec = recFromEvent(e); if (!rec) return;
     if (sessions.has(`${rec.state.windowId}#${index}`)) return;
     const saved = rec.state.cells[index] || {};
-    spawnCell(rec.state.windowId, index, { cols, rows, cwd: saved.cwd, resumeId: saved.sessionId });
+    // Only resume sessions that actually have a persisted conversation.
+    const resumeId = isResumable(saved.sessionId, saved.cwd) ? saved.sessionId : undefined;
+    spawnCell(rec.state.windowId, index, { cols, rows, cwd: saved.cwd, resumeId });
   });
   ipcMain.on('pty:input', (e, index, data) => {
     const rec = recFromEvent(e); if (!rec) return;
@@ -362,7 +413,7 @@ app.whenReady().then(async () => {
 
   // windows
   ipcMain.on('window:new', () => {
-    const n = nextWindowNumber(); const id = `w${n}`;
+    const { n, id } = nextWindowInfo();
     const st = defaultWindowState(id, n);
     writeJsonAtomic(windowStateFile(id), st);
     createWindow(st);

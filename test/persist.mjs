@@ -9,12 +9,20 @@ const udd = tmpUserDataDir();
 // Real folders so resume-in-cwd is genuinely exercised (a real project dir would exist).
 const alphaDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-alpha-'));
 const betaDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-beta-'));
+const gammaDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-gamma-'));
+const cfgDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-cfg-')); // isolated ~/.claude for transcripts
+function writeTranscript(sessionId, cwd) {
+  const dir = path.join(cfgDir, 'projects', cwd.replace(/[:\\/]/g, '-'));
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, `${sessionId}.jsonl`),
+    JSON.stringify({ type: 'user', message: { role: 'user', content: 'hi' }, sessionId }) + '\n');
+}
 let fail = false;
 const assert = (c, m) => { if (!c) { fail = true; console.log('FAIL:', m); } else console.log('ok:', m); };
 
 // ---- Session 1: set things up, then close (triggers save) ----
 {
-  const { app, win } = await launchApp({ launchCmd: 'Write-Output launched', userDataDir: udd });
+  const { app, win } = await launchApp({ launchCmd: 'Write-Output launched', userDataDir: udd, extraEnv: { CLAUDE_CONFIG_DIR: cfgDir } });
   await sleep(1500);
   const rt = runtime(udd);
 
@@ -23,6 +31,8 @@ const assert = (c, m) => { if (!c) { fail = true; console.log('FAIL:', m); } els
   await fireHook({ kind: 'start', cell: 1, sessionId: 'SESS-BBB', port: rt.port, token: rt.token, cwd: betaDir });
   // Cell 1 ends up needing permission (glow should persist).
   await fireHook({ kind: 'permission', cell: 1, sessionId: 'SESS-BBB', port: rt.port, token: rt.token, cwd: betaDir });
+  // Cell 2 gets a session id but the user never sent a message (no transcript) -> not resumable.
+  await fireHook({ kind: 'start', cell: 2, sessionId: 'SESS-CCC', port: rt.port, token: rt.token, cwd: gammaDir });
   await sleep(600);
 
   // Rename cell 0 through the UI.
@@ -34,17 +44,24 @@ const assert = (c, m) => { if (!c) { fail = true; console.log('FAIL:', m); } els
   await app.close();
 }
 
-// ---- window state on disk ----
-const st = JSON.parse(fs.readFileSync(path.join(udd, 'windows', 'w1.json'), 'utf8'));
+// ---- window state on disk (single window; id is now folder-namespaced) ----
+const wdir = path.join(udd, 'windows');
+const wfile = fs.readdirSync(wdir).find((f) => f.endsWith('.json'));
+const st = JSON.parse(fs.readFileSync(path.join(wdir, wfile), 'utf8'));
 assert(st.cells['0'].sessionId === 'SESS-AAA', 'cell0 sessionId persisted');
 assert(st.cells['0'].cwd === alphaDir, 'cell0 cwd persisted');
 assert(st.cells['0'].name === 'Alpha Session', 'cell0 name persisted');
 assert(st.cells['1'].sessionId === 'SESS-BBB', 'cell1 sessionId persisted');
 assert(st.cells['1'].glow === 'permission', 'cell1 glow persisted');
+assert(st.cells['2'].sessionId === 'SESS-CCC', 'cell2 sessionId persisted (but has no transcript)');
+
+// AAA and BBB have real conversations on disk; CCC deliberately does not.
+writeTranscript('SESS-AAA', alphaDir);
+writeTranscript('SESS-BBB', betaDir);
 
 // ---- Session 2: relaunch, verify restore + resume ----
 {
-  const { app, win } = await launchApp({ launchCmd: 'Write-Output launched', userDataDir: udd });
+  const { app, win } = await launchApp({ launchCmd: 'Write-Output launched', userDataDir: udd, extraEnv: { CLAUDE_CONFIG_DIR: cfgDir } });
   await win.waitForFunction(() => window.__ready === true, { timeout: 10000 });
   await sleep(1800); // let cell:launched events arrive
 
@@ -60,12 +77,12 @@ assert(st.cells['1'].glow === 'permission', 'cell1 glow persisted');
   assert(l0 && l0.cwd === alphaDir, 'cell0 resumed in its saved cwd');
   assert(l0 && l0.line.includes('--resume SESS-AAA'), 'cell0 launch line includes --resume');
   assert(l1 && l1.resumeId === 'SESS-BBB', 'cell1 resumed with SESS-BBB');
-  assert(l2 && !l2.resumeId, 'fresh cell (2) has no resume');
+  assert(l2 && !l2.resumeId, 'cell2 NOT resumed (had a session id but no real transcript)');
 
   await win.screenshot({ path: shot('shot-6-restored.png') });
   await app.close();
 }
 
 console.log(fail ? 'RESULT: FAIL' : 'RESULT: PASS');
-for (const d of [udd, alphaDir, betaDir]) fs.rmSync(d, { recursive: true, force: true });
+for (const d of [udd, alphaDir, betaDir, gammaDir, cfgDir]) fs.rmSync(d, { recursive: true, force: true });
 if (fail) process.exit(1);
