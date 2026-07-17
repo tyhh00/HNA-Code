@@ -105,6 +105,45 @@ There is also `test/e2e-real.mjs`, a live test against an authenticated `claude`
 - Depends on Claude Code's hook schema (SessionStart, Notification matchers, `--resume`), verified
   against Claude Code 2.1.x. If those change, glow degrades gracefully rather than breaking.
 
+## Building and releasing
+
+```bash
+npm run pack:portable   # dist/ClaudeWindows-<version>-portable.exe (single-file, no install)
+npm run pack            # portable + NSIS installer (Claude Windows Setup <version>.exe)
+```
+
+Notes:
+- The build uses `asar: false` on purpose, so `src/hooks/signal.ps1` and the icon stay real
+  files on disk. The hook must be a real file because Claude Code's hook runner (an external
+  process) executes it; it cannot read inside a packed `.asar`.
+- First Windows build may fail extracting electron-builder's `winCodeSign` toolchain with
+  "Cannot create symbolic link". That is a Windows privilege quirk (the archive contains macOS
+  symlinks). Fix by enabling Windows Developer Mode, or building from an elevated shell. We only
+  need the Windows tools from it.
+
+### Code signing (avoid the "unknown publisher" warning)
+
+An unsigned exe triggers SmartScreen ("unknown publisher") on first run. To ship a trusted
+release you need a code-signing certificate:
+
+- **OV** certificate: cheaper, but SmartScreen still warns until the app earns download reputation.
+- **EV** certificate: pricier and requires a hardware token or cloud HSM, but gives instant
+  SmartScreen trust. This is what most public apps use.
+
+Once you have one, signing is config only:
+
+```jsonc
+"win": {
+  "target": ["nsis", "portable"],
+  "icon": "build/icon.ico",
+  "signtoolOptions": { "certificateSubjectName": "Your Company", "signingHashAlgorithms": ["sha256"] }
+}
+```
+
+electron-builder then signs the exe and installer during the build. (For a `.pfx` file cert use
+`certificateFile` + the `CSC_KEY_PASSWORD` env var instead.) For a personal or OSS build you can
+ship unsigned and tell users to click "More info -> Run anyway".
+
 ## Contributing
 
 Issues and pull requests are welcome. Good first areas: widening the tested Claude Code version
