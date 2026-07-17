@@ -71,7 +71,7 @@ let signal = { port: 0, token: '' };
 function windowsDir() { return path.join(app.getPath('userData'), 'windows'); }
 function windowStateFile(id) { return path.join(windowsDir(), `${id}.json`); }
 function defaultWindowState(id, n) {
-  return { windowId: id, title: `window-${n}`, layout: { rows: 3, cols: 4 }, rootFolder: null, cells: {}, panes: [], seq: 0 };
+  return { windowId: id, title: `window-${n}`, workspace: currentWorkspace, layout: { rows: 3, cols: 4 }, cells: {}, panes: [], seq: 0 };
 }
 function nextWindowNumber() {
   let max = 0;
@@ -94,11 +94,19 @@ function sendTo(rec, channel, ...args) {
   } catch (_) {}
 }
 function cellRec(rec, index) { const c = rec.state.cells; if (!c[index]) c[index] = {}; return c[index]; }
-function effectiveRoot(rec) {
-  const r = (rec && rec.state.rootFolder) || process.env.CW_ROOT_FOLDER;
-  try { if (r && fs.existsSync(r)) return r; } catch (_) {}
+// The current workspace folder. Fresh sessions start here; windows are scoped to it.
+let currentWorkspace = null;
+function normFolder(f) {
+  try { return path.resolve(f || defaultCwd()).toLowerCase(); }
+  catch (_) { return String(f || '').toLowerCase(); }
+}
+function resolveWorkspace() {
+  for (const c of [process.env.CW_ROOT_FOLDER, settings.lastWorkspace, defaultCwd()]) {
+    try { if (c && fs.existsSync(c)) return c; } catch (_) {}
+  }
   return defaultCwd();
 }
+function effectiveRoot() { return currentWorkspace || defaultCwd(); }
 function launchBase() {
   const v = process.env.CW_LAUNCH_CMD;
   if (v !== undefined) return v === 'SHELL' ? '' : v;
@@ -140,18 +148,34 @@ function createWindow(state) {
 }
 
 function openSavedWindows() {
-  let states = [];
+  const cw = normFolder(currentWorkspace);
+  let all = [];
   try {
     for (const f of fs.readdirSync(windowsDir())) {
       if (!f.endsWith('.json')) continue;
-      try { states.push(JSON.parse(fs.readFileSync(path.join(windowsDir(), f), 'utf8'))); } catch (_) {}
+      try { all.push(JSON.parse(fs.readFileSync(path.join(windowsDir(), f), 'utf8'))); } catch (_) {}
     }
   } catch (_) {}
+
+  // Keep only windows belonging to the current workspace. Legacy windows (no workspace field)
+  // are migrated into the current workspace the first time they open.
+  const states = [];
+  for (const st of all) {
+    if (st.workspace === undefined || st.workspace === null) {
+      st.workspace = currentWorkspace;
+      writeJsonAtomic(windowStateFile(st.windowId), st);
+      states.push(st);
+    } else if (normFolder(st.workspace) === cw) {
+      states.push(st);
+    }
+  }
   states.sort((a, b) => String(a.windowId).localeCompare(String(b.windowId), undefined, { numeric: true }));
+
   if (states.length === 0) {
-    const st = defaultWindowState('w1', 1);
-    writeJsonAtomic(windowStateFile('w1'), st);
-    states = [st];
+    const n = nextWindowNumber();
+    const st = defaultWindowState(`w${n}`, n);
+    writeJsonAtomic(windowStateFile(st.windowId), st);
+    states.push(st);
   }
   for (const st of states) if (!windows.has(st.windowId)) createWindow(st);
 }
@@ -160,7 +184,7 @@ function spawnCell(windowId, index, opts = {}) {
   const rec = windows.get(windowId);
   if (!rec) return;
   const gid = `${windowId}#${index}`;
-  let cwd = opts.cwd || effectiveRoot(rec);
+  let cwd = opts.cwd || effectiveRoot();
   try { if (!fs.existsSync(cwd)) cwd = defaultCwd(); } catch (_) { cwd = defaultCwd(); }
   const base = launchBase();
   const line = opts.resumeId && base ? `${base} --resume ${opts.resumeId}` : base;
@@ -264,6 +288,9 @@ function applyPerfSetting() {
 app.whenReady().then(async () => {
   Menu.setApplicationMenu(null); // we handle zoom ourselves; avoids accidental Ctrl+R reload
   loadSettings();
+  currentWorkspace = resolveWorkspace();
+  settings.lastWorkspace = currentWorkspace; // remember this folder for the next plain launch
+  writeJsonAtomic(settingsFile(), settings);
   if (settings.autoHooks !== false) { try { hooks.installHooks(HOOK_SCRIPT); } catch (_) {} }
   await initSignal();
   applyPerfSetting();
@@ -315,20 +342,21 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle('sound:load', (_e, p) => (p ? readAudioDataUrl(p) : null));
 
-  // folder (per window)
+  // workspace folder — picking one switches the workspace (relaunch reopens its windows)
   ipcMain.handle('root:pick', async (e) => {
-    const rec = recFromEvent(e); if (!rec) return null;
-    const r = await dialog.showOpenDialog(rec.win, { title: 'Open folder', properties: ['openDirectory'] });
+    const rec = recFromEvent(e);
+    const r = await dialog.showOpenDialog(rec ? rec.win : null, { title: 'Open folder as workspace', properties: ['openDirectory'] });
     if (r.canceled || !r.filePaths[0]) return null;
-    rec.state.rootFolder = r.filePaths[0]; saveWindowNow(rec);
+    settings.lastWorkspace = r.filePaths[0];
+    writeJsonAtomic(settingsFile(), settings); // persist before the renderer relaunches
     return r.filePaths[0];
   });
-  ipcMain.handle('root:get', (e) => effectiveRoot(recFromEvent(e)));
-  ipcMain.on('app:relaunch', () => { app.relaunch(); app.exit(0); });
+  ipcMain.handle('root:get', () => effectiveRoot());
+  ipcMain.on('app:relaunch', () => { for (const rec of windows.values()) saveWindowNow(rec); app.relaunch(); app.exit(0); });
   ipcMain.on('open:external', (_e, url) => { if (/^https?:\/\//.test(url)) shell.openExternal(url); });
   ipcMain.on('cell:openInVsCode', (e, index) => {
     const rec = recFromEvent(e); if (!rec) return;
-    const dir = (rec.state.cells[index] && rec.state.cells[index].cwd) || effectiveRoot(rec);
+    const dir = (rec.state.cells[index] && rec.state.cells[index].cwd) || effectiveRoot();
     try { require('child_process').spawn('code', [dir], { shell: true, detached: true, stdio: 'ignore' }).unref(); } catch (_) {}
   });
 

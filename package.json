@@ -19,7 +19,9 @@
     "test:persist": "node test/persist.mjs",
     "test:hooks": "node test/hooks.cjs",
     "test:settings": "node test/settings.mjs",
-    "test:multiwindow": "node test/multiwindow.mjs"
+    "test:multiwindow": "node test/multiwindow.mjs",
+    "test:tabs": "node test/tabs.mjs",
+    "test:workspaces": "node test/workspaces.mjs"
   },
   "dependencies": {
     "@lydell/node-pty": "^1.1.0",
