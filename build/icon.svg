@@ -1,0 +1,16 @@
+<svg viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <!-- app tile -->
+  <rect width="512" height="512" rx="112" fill="#1b2130"/>
+  <!-- 2x2 grid of session cells; the bottom-right one is "glowing" (waiting on you) -->
+  <rect x="96"  y="96"  width="140" height="140" rx="22" fill="#26344d"/>
+  <rect x="276" y="96"  width="140" height="140" rx="22" fill="#26344d"/>
+  <rect x="96"  y="276" width="140" height="140" rx="22" fill="#26344d"/>
+  <rect x="276" y="276" width="140" height="140" rx="22" fill="#3a3320" stroke="#e0b23a" stroke-width="6"/>
+  <!-- Claude spark inside the glowing cell -->
+  <g stroke="#d97757" stroke-width="14" stroke-linecap="round" transform="translate(346,346)">
+    <line x1="0" y1="-42" x2="0" y2="42"/>
+    <line x1="-36" y1="-21" x2="36" y2="21"/>
+    <line x1="-36" y1="21" x2="36" y2="-21"/>
+  </g>
+  <circle cx="346" cy="346" r="15" fill="#e8a893"/>
+</svg>

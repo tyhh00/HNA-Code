@@ -1,0 +1,248 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Claude Windows</title>
+  <link rel="stylesheet" href="../../node_modules/@xterm/xterm/css/xterm.css" />
+  <style>
+    :root { --bg: #1e1e1e; --toolbar: #252526; --border: #3a3a3a; --fg: #cccccc; --accent: #3a86ff; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden;
+      font-family: 'Segoe UI', system-ui, sans-serif; color: var(--fg); }
+
+    #toolbar {
+      height: 40px; display: flex; align-items: center; gap: 16px;
+      padding: 0 12px; background: var(--toolbar); border-bottom: 1px solid var(--border);
+      user-select: none;
+    }
+    #toolbar .brand { font-weight: 600; font-size: 13px; letter-spacing: .3px; display: flex; align-items: center; gap: 7px; }
+    #toolbar label { font-size: 12px; display: flex; align-items: center; gap: 6px; }
+    #toolbar select {
+      background: #333; color: var(--fg); border: 1px solid var(--border);
+      border-radius: 4px; padding: 3px 6px; font-size: 12px;
+    }
+    #toolbar .folder-btn {
+      background: #333; color: var(--fg); border: 1px solid var(--border);
+      border-radius: 4px; padding: 3px 8px; font-size: 12px; cursor: pointer;
+      max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    #toolbar .folder-btn:hover { background: #3d3d3d; }
+    #toolbar .status { margin-left: auto; font-size: 11px; color: #888; }
+
+    /* Custom pickers (layout, help) */
+    .picker { position: relative; }
+    .picker-btn {
+      display: flex; align-items: center; gap: 7px; background: #333; color: var(--fg);
+      border: 1px solid var(--border); border-radius: 4px; padding: 2px 8px; font-size: 12px; cursor: pointer;
+    }
+    .picker-btn:hover { background: #3d3d3d; }
+    .menu {
+      position: absolute; top: 34px; left: 0; background: #2a2a2a; border: 1px solid var(--border);
+      border-radius: 8px; padding: 6px; display: none; z-index: 20;
+      box-shadow: 0 10px 30px rgba(0,0,0,.55); min-width: 190px;
+    }
+    .menu.open { display: block; }
+    .menu.right { left: auto; right: 0; }
+    .menu .group-label { font-size: 10px; text-transform: uppercase; letter-spacing: .6px; color: #777; padding: 6px 6px 3px; }
+    .menu-item {
+      display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 6px;
+      cursor: pointer; font-size: 12px; color: var(--fg);
+    }
+    .menu-item:hover { background: #3a3a3a; }
+    .menu-item.active { background: #1e2b45; }
+    .menu-item svg rect { fill: #8ab4f8; }
+    .menu-item .layout-ico { flex: 0 0 auto; display: flex; }
+    .icon-btn {
+      background: transparent; border: 1px solid var(--border); color: var(--fg);
+      border-radius: 4px; width: 26px; height: 26px; cursor: pointer; font-size: 13px;
+    }
+    .icon-btn:hover { background: #333; }
+    #settings-btn {
+      background: transparent; border: 1px solid var(--border); color: var(--fg);
+      border-radius: 4px; width: 28px; height: 26px; cursor: pointer; font-size: 14px;
+    }
+    #settings-btn:hover { background: #333; }
+
+    #grid {
+      display: grid; gap: 6px; padding: 6px;
+      height: calc(100vh - 40px);
+      grid-template-columns: 1fr; grid-template-rows: 1fr;
+    }
+    .cell {
+      position: relative; display: flex; flex-direction: column;
+      border: 2px solid var(--border); border-radius: 6px; overflow: hidden;
+      background: #000; min-width: 0; min-height: 0;
+    }
+    .cell-header {
+      height: 22px; flex: 0 0 22px; display: flex; align-items: center;
+      padding: 0 8px; background: #2a2a2a; border-bottom: 1px solid var(--border);
+      font-size: 11px; color: #bbb; gap: 6px;
+    }
+    .cell-mark { flex: 0 0 auto; display: flex; align-items: center; }
+    .cell-name { flex: 1 1 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; outline: none; }
+    .cell-name[contenteditable="true"] { background: #10233f; padding: 0 3px; border-radius: 3px; }
+    .cell-code {
+      flex: 0 0 auto; background: transparent; border: 1px solid transparent; color: #888;
+      border-radius: 4px; font-size: 10px; font-family: Consolas, monospace; cursor: pointer;
+      padding: 1px 5px;
+    }
+    .cell-code:hover { color: #cfe0ff; border-color: var(--border); background: #1e2b45; }
+    .cell .term { position: relative; flex: 1 1 auto; min-height: 0; padding: 4px; }
+
+    /* Glow: done-and-waiting = steady amber; needs-permission = breathing blue. */
+    .cell.glow-idle {
+      border-color: #d7a52a;
+      box-shadow: 0 0 0 1px rgba(215,165,42,.6), 0 0 14px 2px rgba(215,165,42,.35);
+    }
+    .cell.glow-idle .cell-header { background: #3a3320; color: #e8c65a; }
+    .cell.glow-permission {
+      border-color: #3a86ff;
+      animation: breathe 1.6s ease-in-out infinite;
+    }
+    .cell.glow-permission .cell-header { background: #1e2b45; color: #7fb0ff; }
+    @keyframes breathe {
+      0%, 100% { box-shadow: 0 0 0 1px rgba(58,134,255,.30), 0 0 6px 1px rgba(58,134,255,.15);
+                 border-color: #2b5fb0; }
+      50%      { box-shadow: 0 0 0 3px rgba(58,134,255,.85), 0 0 22px 5px rgba(58,134,255,.55);
+                 border-color: #6aa8ff; }
+    }
+
+    /* Settings overlay */
+    #settings-overlay {
+      position: fixed; inset: 0; background: rgba(0,0,0,.55);
+      display: none; align-items: center; justify-content: center; z-index: 10;
+    }
+    #settings-overlay.open { display: flex; }
+    .panel {
+      width: 460px; max-height: 88vh; overflow-y: auto; background: #252526;
+      border: 1px solid var(--border); border-radius: 10px; padding: 20px 22px;
+      box-shadow: 0 12px 40px rgba(0,0,0,.5);
+    }
+    .panel h2 { margin: 0 0 4px; font-size: 16px; }
+    .panel .sub { margin: 0 0 16px; font-size: 12px; color: #888; }
+    .row { display: flex; align-items: center; gap: 10px; padding: 9px 0;
+      border-top: 1px solid #333; font-size: 13px; }
+    .row:first-of-type { border-top: none; }
+    .row .grow { flex: 1 1 auto; }
+    .row label.main { font-weight: 500; }
+    .row .hint { font-size: 11px; color: #888; }
+    .row input[type="text"] {
+      background: #1c1c1c; color: var(--fg); border: 1px solid var(--border);
+      border-radius: 5px; padding: 5px 8px; font-size: 12px; min-width: 140px;
+    }
+    .row select {
+      background: #333; color: var(--fg); border: 1px solid var(--border);
+      border-radius: 5px; padding: 4px 6px; font-size: 12px;
+    }
+    .btn {
+      background: #3a3a3a; color: var(--fg); border: 1px solid var(--border);
+      border-radius: 5px; padding: 5px 10px; font-size: 12px; cursor: pointer;
+    }
+    .btn:hover { background: #454545; }
+    .btn.accent { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .btn.accent:hover { filter: brightness(1.1); }
+    .filename { font-size: 11px; color: #9aa; max-width: 150px; overflow: hidden;
+      text-overflow: ellipsis; white-space: nowrap; }
+    .section-title { margin: 16px 0 2px; font-size: 11px; text-transform: uppercase;
+      letter-spacing: .6px; color: #777; }
+    #hooks-status { font-size: 11px; color: #888; }
+    .panel .close-row { margin-top: 18px; display: flex; justify-content: flex-end; gap: 8px; }
+  </style>
+</head>
+<body>
+  <div id="toolbar">
+    <span class="brand">
+      <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
+        <g stroke="#d97757" stroke-width="2.2" stroke-linecap="round">
+          <line x1="12" y1="3.5" x2="12" y2="20.5"/>
+          <line x1="4.4" y1="7.75" x2="19.6" y2="16.25"/>
+          <line x1="4.4" y1="16.25" x2="19.6" y2="7.75"/>
+        </g><circle cx="12" cy="12" r="2.5" fill="#e8a893"/>
+      </svg>
+      Claude Windows
+    </span>
+    <div id="layout-picker" class="picker">
+      <button id="layout-btn" class="picker-btn" title="Layout"></button>
+      <div id="layout-menu" class="menu"></div>
+    </div>
+    <button id="folder-btn" class="folder-btn" title="Open folder, new sessions start here">📁 <span id="folder-name">home</span></button>
+    <span class="status" id="status"></span>
+    <div id="help-picker" class="picker">
+      <button id="help-btn" class="icon-btn" title="Help">?</button>
+      <div id="help-menu" class="menu right"></div>
+    </div>
+    <button id="settings-btn" title="Settings">⚙</button>
+  </div>
+  <div id="grid"></div>
+
+  <div id="settings-overlay">
+    <div class="panel" role="dialog" aria-label="Settings">
+      <h2>Settings</h2>
+      <p class="sub">Changes save automatically.</p>
+
+      <div class="section-title">Glow</div>
+      <div class="row">
+        <label class="main grow" for="set-glow-enabled">Enable glow</label>
+        <input type="checkbox" id="set-glow-enabled" />
+      </div>
+      <div class="row">
+        <div class="grow">
+          <label class="main" for="set-glow-on">Glow when</label>
+          <div class="hint">idle = only when a session is waiting on you</div>
+        </div>
+        <select id="set-glow-on">
+          <option value="idle">Waiting on you</option>
+          <option value="stop">Every turn end</option>
+        </select>
+      </div>
+
+      <div class="section-title">Sounds</div>
+      <div class="row">
+        <input type="checkbox" id="set-done-enabled" />
+        <div class="grow">
+          <label class="main" for="set-done-enabled">Done / waiting sound</label>
+          <div class="filename" id="done-file">no file</div>
+        </div>
+        <button class="btn" id="done-pick">Choose…</button>
+        <button class="btn" id="done-test">▶</button>
+      </div>
+      <div class="row">
+        <input type="checkbox" id="set-perm-enabled" />
+        <div class="grow">
+          <label class="main" for="set-perm-enabled">Permission sound</label>
+          <div class="filename" id="perm-file">no file</div>
+        </div>
+        <button class="btn" id="perm-pick">Choose…</button>
+        <button class="btn" id="perm-test">▶</button>
+      </div>
+
+      <div class="section-title">Launch</div>
+      <div class="row">
+        <div class="grow">
+          <label class="main" for="set-launch">Launch command</label>
+          <div class="hint">what runs in each cell (e.g. claude)</div>
+        </div>
+        <input type="text" id="set-launch" placeholder="claude" />
+      </div>
+
+      <div class="section-title">Claude Code hooks</div>
+      <div class="row">
+        <div class="grow">
+          <div class="hint">Adds glow signals to <code>~/.claude/settings.json</code>. Only your Claude Windows hooks are touched.</div>
+          <div id="hooks-status"></div>
+        </div>
+        <button class="btn accent" id="hooks-connect">Connect</button>
+        <button class="btn" id="hooks-disconnect">Disconnect</button>
+      </div>
+
+      <div class="close-row">
+        <button class="btn accent" id="settings-close">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="../../node_modules/@xterm/xterm/lib/xterm.js"></script>
+  <script src="../../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
+  <script src="renderer.js"></script>
+</body>
+</html>
