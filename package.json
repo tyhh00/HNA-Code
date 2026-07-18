@@ -9,6 +9,8 @@
     "start": "electron .",
     "pack": "electron-builder",
     "pack:portable": "electron-builder --win portable",
+    "pack:mac": "electron-builder --mac",
+    "pack:linux": "electron-builder --linux",
     "pack:dir": "electron-builder --dir",
     "icons": "node build/gen-icons.mjs",
     "test": "node test/hooks.cjs && node test/smoke.mjs && node test/grid.mjs && node test/signal.mjs && node test/glow.mjs && node test/persist.mjs && node test/settings.mjs && node test/multiwindow.mjs && node test/perf.mjs && node test/tabs.mjs && node test/workspaces.mjs && node test/sidebar.mjs && node test/home.mjs && node test/import.mjs && node test/import-manual.mjs",
@@ -52,6 +54,19 @@
       "allowToChangeInstallationDirectory": true,
       "shortcutName": "HNA-Code"
     },
-    "portable": { "artifactName": "HNA-Code-${version}-portable.exe" }
+    "portable": { "artifactName": "HNA-Code-${version}-portable.exe" },
+    "mac": {
+      "target": ["dmg", "zip"],
+      "icon": "build/icon.png",
+      "category": "public.app-category.developer-tools",
+      "identity": null
+    },
+    "dmg": { "artifactName": "HNA-Code-${version}.dmg" },
+    "linux": {
+      "target": ["AppImage"],
+      "icon": "build/icon.png",
+      "category": "Development",
+      "artifactName": "HNA-Code-${version}.AppImage"
+    }
   }
 }

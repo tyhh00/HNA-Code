@@ -5,6 +5,9 @@
 const TerminalCtor = window.Terminal;
 const FitAddonCtor = window.FitAddon.FitAddon;
 
+// Cross-platform monospace stack (Windows: Cascadia/Consolas; macOS: SF Mono/Menlo; Linux fallbacks).
+const MONO_FONT = "'Cascadia Mono', 'Cascadia Code', Menlo, 'SF Mono', Monaco, Consolas, 'DejaVu Sans Mono', ui-monospace, monospace";
+
 // Terminal colors follow the active theme's --term-bg (read at create/switch time).
 function cssVar(name) { return getComputedStyle(document.body).getPropertyValue(name).trim(); }
 function termTheme() {
@@ -119,8 +122,10 @@ function createSession(sid, saved = {}) {
   wrap.appendChild(termEl);
 
   const term = new TerminalCtor({
-    fontSize: 13, fontFamily: 'Cascadia Mono, Consolas, monospace',
+    fontSize: 13, fontFamily: MONO_FONT,
     cursorBlink: true, theme: termTheme(), scrollback: 5000,
+    // OSC 8 terminal hyperlinks -> open in the OS default browser (no bare Electron popup, no prompt).
+    linkHandler: { activate: (_e, uri) => { if (/^https?:\/\//.test(uri)) window.grid.openExternal(uri); } },
   });
   const fit = new FitAddonCtor();
   term.loadAddon(fit);
@@ -138,13 +143,16 @@ function createSession(sid, saved = {}) {
   term.onData((d) => window.grid.sendInput(sid, d));   // forward all bytes (incl. auto-replies)
   term.onKey(() => { clearGlow(sid); markReal(sid); }); // real keypress -> engaged + a real session
   // Ctrl+V pastes the clipboard; Ctrl+C copies the selection (falling through to SIGINT otherwise).
-  term.attachCustomKeyEventHandler((e) => {
-    if (e.type !== 'keydown' || !(e.ctrlKey || e.metaKey) || e.altKey) return true;
-    const k = (e.key || '').toLowerCase();
-    if (k === 'v' && !e.shiftKey) { const t = window.grid.clipboardRead(); if (t) term.paste(t); return false; }
-    if (k === 'c' && term.hasSelection()) { window.grid.clipboardWrite(term.getSelection()); return false; }
-    return true;
-  });
+  // On macOS the native Edit menu (Cmd+V/C) handles this, so we don't double-handle it there.
+  if (window.grid.platform !== 'darwin') {
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.type !== 'keydown' || !e.ctrlKey || e.metaKey || e.altKey) return true;
+      const k = (e.key || '').toLowerCase();
+      if (k === 'v' && !e.shiftKey) { const t = window.grid.clipboardRead(); if (t) term.paste(t); return false; }
+      if (k === 'c' && term.hasSelection()) { window.grid.clipboardWrite(term.getSelection()); return false; }
+      return true;
+    });
+  }
   // Clicking into a glowing cell is an implicit acknowledgement -> fade the glow away.
   wrap.addEventListener('mousedown', () => clearGlow(sid));
   return rec;

@@ -9,8 +9,9 @@ const os = require('os');
 const fs = require('fs');
 const { startSignalServer } = require('./signal-server');
 const hooks = require('./hooks');
+const platform = require('./platform');
 
-const HOOK_SCRIPT = path.join(__dirname, '..', 'hooks', 'signal.ps1');
+const HOOK_SCRIPT = platform.hookScriptPath(path.join(__dirname, '..', 'hooks'));
 const ICON = path.join(__dirname, '..', '..', 'build', 'icon.png');
 
 let pty;
@@ -116,6 +117,18 @@ function scheduleWindowSave(rec) {
 }
 function saveWindowNow(rec) { writeJsonAtomic(windowStateFile(rec.state.windowId), rec.state); }
 function recFromEvent(e) { const id = wcToWin.get(e.sender.id); return id ? windows.get(id) : null; }
+// Send links to the user's DEFAULT browser (Chrome/etc.) instead of a chromeless Electron window.
+// Claude emits OSC 8 terminal hyperlinks; xterm's default handler would window.open() them, which
+// Electron turns into a bare popup window. Deny that and open externally.
+function wireExternalLinks(win) {
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//.test(url)) shell.openExternal(url);
+    return { action: 'deny' };
+  });
+  win.webContents.on('will-navigate', (e, url) => {
+    if (url && !url.startsWith('file:')) { e.preventDefault(); if (/^https?:\/\//.test(url)) shell.openExternal(url); }
+  });
+}
 // Guarded send: never throw if the window/webContents was destroyed mid-teardown.
 function sendTo(rec, channel, ...args) {
   try {
@@ -279,6 +292,7 @@ function createWindow(state) {
   const rec = { win, wcId, state, saveTimer: null, removed: false };
   windows.set(state.windowId, rec);
   wcToWin.set(wcId, state.windowId);
+  wireExternalLinks(win);
 
   // Zoom in/out/reset that actually works for + as well as -, and never reloads the grid.
   win.webContents.on('before-input-event', (event, input) => {
@@ -346,6 +360,7 @@ function createHomeWindow() {
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false },
   });
   homeWin = win; homeWcId = win.webContents.id;
+  wireExternalLinks(win);
   win.webContents.on('before-input-event', (event, input) => {
     if (input.type !== 'keyDown' || !(input.control || input.meta)) return;
     const wc = win.webContents;
@@ -393,9 +408,9 @@ function spawnCell(windowId, index, opts = {}) {
   try { if (!fs.existsSync(cwd)) cwd = defaultCwd(); } catch (_) { cwd = defaultCwd(); }
   const base = launchBase();
   const line = opts.resumeId && base ? `${base} --resume ${opts.resumeId}` : base;
-  const args = line && line.trim() ? ['-NoLogo', '-NoExit', '-Command', line] : [];
+  const { file, args } = platform.cellCommand(line);
 
-  const proc = pty.spawn('powershell.exe', args, {
+  const proc = pty.spawn(file, args, {
     name: 'xterm-256color',
     cols: opts.cols || 80, rows: opts.rows || 24, cwd,
     env: { ...process.env, CC_CELL_ID: gid, CC_SIGNAL_PORT: String(signal.port), CC_SIGNAL_TOKEN: signal.token },
@@ -440,26 +455,23 @@ function onSignal(payload) {
 
 // ---- performance sampler (opt-in) ------------------------------------------
 // Sums each cell's PTY process subtree (claude + whatever it spawns) for CPU% and RAM.
-// One PowerShell/CIM query per tick; only runs while settings.perfView is on.
+// One OS process query per tick (WMI on Windows, `ps` elsewhere); only runs while perfView is on.
 const { spawn: cpSpawn } = require('child_process');
 let perfTimer = null;
 let perfBusy = false;
-const PERF_PS =
-  '$parent=@{}; Get-CimInstance Win32_Process | ForEach-Object { $parent[[int]$_.ProcessId]=[int]$_.ParentProcessId };' +
-  'Get-CimInstance Win32_PerfFormattedData_PerfProc_Process | Where-Object { $_.IDProcess -ne 0 } | ForEach-Object {' +
-  ' [pscustomobject]@{ p=[int]$_.IDProcess; pp=$parent[[int]$_.IDProcess]; c=[int]$_.PercentProcessorTime; m=[long]$_.WorkingSet } } | ConvertTo-Json -Compress';
 
 function samplePerf() {
   if (perfBusy) return;
   perfBusy = true;
   let out = '';
-  const ps = cpSpawn('powershell', ['-NoProfile', '-NonInteractive', '-Command', PERF_PS], { windowsHide: true });
+  const { file, args } = platform.perfCommand();
+  const ps = cpSpawn(file, args, { windowsHide: true });
   ps.stdout.on('data', (d) => (out += d));
   ps.on('error', () => { perfBusy = false; });
   ps.on('close', () => {
     perfBusy = false;
-    let list;
-    try { const j = JSON.parse(out); list = Array.isArray(j) ? j : [j]; } catch (_) { return; }
+    const list = platform.perfParse(out);
+    if (!list) return;
     const byPid = new Map(), children = new Map();
     for (const r of list) {
       byPid.set(r.p, r);
@@ -496,7 +508,18 @@ function applyPerfSetting() {
 
 // ---- app lifecycle ---------------------------------------------------------
 app.whenReady().then(async () => {
-  Menu.setApplicationMenu(null); // we handle zoom ourselves; avoids accidental Ctrl+R reload
+  // Windows/Linux: no app menu (we handle zoom ourselves; avoids an accidental Ctrl+R reload).
+  // macOS: a standard menu is expected — it provides Cmd+Q and native Cmd+C/V/A in text inputs.
+  if (platform.isMac) {
+    Menu.setApplicationMenu(Menu.buildFromTemplate([
+      { role: 'appMenu' },
+      { role: 'editMenu' },
+      { role: 'windowMenu' },
+      { label: 'Help', submenu: [{ label: 'GitHub', click: () => shell.openExternal('https://github.com/tyhh00/HNA-Code') }] },
+    ]));
+  } else {
+    Menu.setApplicationMenu(null);
+  }
   loadSettings();
   currentWorkspace = resolveWorkspace(); // a sensible default; the grid only opens once a folder is chosen
   if (settings.autoHooks !== false) { try { hooks.installHooks(HOOK_SCRIPT); } catch (_) {} }

@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const platform = require('./platform');
 
 function claudeDir() {
   return process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
@@ -24,7 +25,7 @@ function writeSettings(obj) {
 }
 
 function command(scriptPath, kind) {
-  return `powershell -NoProfile -ExecutionPolicy Bypass -File "${scriptPath}" -Kind ${kind}`;
+  return platform.hookCommand(scriptPath, kind);
 }
 function entry(scriptPath, matcher, kind) {
   return { matcher, hooks: [{ type: 'command', command: command(scriptPath, kind) }] };

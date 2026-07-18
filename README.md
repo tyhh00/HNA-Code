@@ -37,9 +37,23 @@ built-in importer that pulls your existing Claude Code sessions in from any fold
 
 ## Requirements
 
-- Windows 10 or 11 with Windows Terminal / ConPTY (built in on Windows 11)
-- Node.js (used to run Electron; no C++ compiler needed, the PTY ships prebuilt)
+- Windows 10/11, macOS, or Linux. The PTY ships prebuilt for all three (no C++ compiler needed).
+- Node.js (used to run Electron)
 - Claude Code installed and on PATH (`claude`)
+
+Each cell runs your platform's shell (PowerShell on Windows, your `$SHELL` on macOS/Linux) and
+launches `claude` in it. On macOS/Linux the glow/resume hook is a small `signal.sh` (the twin of
+the Windows `signal.ps1`); everything else is identical across platforms.
+
+## Download
+
+Grab a build from the [Releases](https://github.com/tyhh00/HNA-Code/releases) page (Windows
+`.exe`, macOS `.dmg`, Linux `.AppImage`), or run from source (below). The builds are **unsigned**
+(this is a free, open-source project), so the OS will warn on first launch:
+
+- **Windows:** SmartScreen says "unknown publisher" -> More info -> Run anyway.
+- **macOS:** Gatekeeper says it can't verify the developer -> right-click the app -> Open (once),
+  or run `xattr -cr /Applications/HNA-Code.app` to clear the quarantine flag.
 
 ## Compatibility
 
@@ -122,9 +136,17 @@ There is also `test/e2e-real.mjs`, a live test against an authenticated `claude`
 ## Building and releasing
 
 ```bash
-npm run pack:portable   # dist/HNA-Code-<version>-portable.exe (single-file, no install)
-npm run pack            # portable + NSIS installer (HNA-Code Setup <version>.exe)
+npm run pack:portable   # Windows: dist/HNA-Code-<version>-portable.exe (single-file, no install)
+npm run pack            # current OS, all its targets
+npm run pack:mac        # macOS: dist/HNA-Code-<version>.dmg + a .zip (run on a Mac)
+npm run pack:linux      # Linux: dist/HNA-Code-<version>.AppImage
 ```
+
+Each OS can only build its own installers, so cross-building is done in CI. Pushing a `vX.Y.Z`
+tag runs `.github/workflows/release.yml`, which builds unsigned artifacts on macOS, Windows and
+Linux runners and attaches them to the GitHub Release. This is **free** (GitHub Actions + Releases;
+no store fees, no code-signing certificate). Signing is optional and only needed to remove the
+first-launch OS warning (see below).
 
 Notes:
 - The build uses `asar: false` on purpose, so `src/hooks/signal.ps1` and the icon stay real

@@ -2,6 +2,7 @@
 const { contextBridge, ipcRenderer, clipboard } = require('electron');
 
 contextBridge.exposeInMainWorld('grid', {
+  platform: process.platform,
   // renderer -> main
   cellReady: (cellId, cols, rows) => ipcRenderer.send('cell:ready', cellId, cols, rows),
   sendInput: (cellId, data) => ipcRenderer.send('pty:input', cellId, data),

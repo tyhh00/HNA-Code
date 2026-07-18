@@ -1,0 +1,43 @@
+name: Release
+
+# Build unsigned installers for macOS, Windows and Linux and attach them to a GitHub Release.
+# Free: no code-signing certificate, no app store. Push a version tag (e.g. v0.1.0) to trigger,
+# or run manually from the Actions tab.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Build (unsigned)
+        run: npx --no-install electron-builder --publish never
+        env:
+          # Do not attempt to sign; we ship unsigned so no paid certificate is needed.
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+      - name: Upload to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.exe
+            dist/*.dmg
+            dist/*.zip
+            dist/*.AppImage
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
