@@ -169,9 +169,19 @@ function isResumable(sessionId, cwd) {
 }
 // Encode a folder path the way Claude stores its per-project transcript directory.
 function encodeProject(folder) { return String(folder).replace(/[:\\/]/g, '-'); }
-// All resumable Claude sessions that live under `folder`, newest first, minus any in `exclude`.
-function scanWorkspaceSessions(folder, exclude = new Set()) {
-  const dir = path.join(claudeDir(), 'projects', encodeProject(folder));
+// The cwd a session actually ran in, read straight from its transcript (authoritative — the encoded
+// directory name is lossy and can't be reversed reliably).
+function cwdFromText(text) {
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    let o; try { o = JSON.parse(line); } catch (_) { continue; }
+    if (o && typeof o.cwd === 'string' && o.cwd) return o.cwd;
+  }
+  return null;
+}
+// Resumable sessions in a transcript directory, newest first, minus any in `exclude`. Each carries
+// its own real cwd so it can be resumed in the exact folder Claude stored it under (no file moving).
+function sessionsInDir(dir, fallbackCwd, exclude = new Set()) {
   const out = [];
   let names = [];
   try { names = fs.readdirSync(dir); } catch (_) { return out; }
@@ -180,11 +190,45 @@ function scanWorkspaceSessions(folder, exclude = new Set()) {
     const sessionId = f.slice(0, -6);
     if (exclude.has(sessionId)) continue;
     const file = path.join(dir, f);
-    if (!/"type"\s*:\s*"user"/.test(readHead(file))) continue; // only ones with a real conversation
+    const head = readHead(file);
+    if (!/"type"\s*:\s*"user"/.test(head)) continue; // only ones with a real conversation
     let mtime = 0; try { mtime = fs.statSync(file).mtimeMs; } catch (_) {}
-    out.push({ sessionId, title: firstPrompt(sessionId, folder) || '(untitled session)', mtime });
+    out.push({ sessionId, title: firstPromptFromText(head) || '(untitled session)', mtime, cwd: cwdFromText(head) || fallbackCwd || null });
   }
   out.sort((a, b) => b.mtime - a.mtime);
+  return out;
+}
+// Sessions that live under `folder` (its own project dir).
+function scanWorkspaceSessions(folder, exclude = new Set()) {
+  return sessionsInDir(path.join(claudeDir(), 'projects', encodeProject(folder)), folder, exclude);
+}
+// Sessions in a specific encoded project directory (used by the Settings importer, which can browse
+// across every project Claude knows about, not just the current workspace).
+function scanProjectSessions(encodedDir) {
+  return sessionsInDir(path.join(claudeDir(), 'projects', encodedDir), null);
+}
+// Every Claude project directory that has at least one resumable session, with its real path.
+function listProjects() {
+  const base = path.join(claudeDir(), 'projects');
+  const out = [];
+  let dirs = [];
+  try { dirs = fs.readdirSync(base); } catch (_) { return out; }
+  for (const d of dirs) {
+    const full = path.join(base, d);
+    try { if (!fs.statSync(full).isDirectory()) continue; } catch (_) { continue; }
+    let count = 0, cwd = null, latest = 0, files = [];
+    try { files = fs.readdirSync(full); } catch (_) {}
+    for (const f of files) {
+      if (!f.endsWith('.jsonl')) continue;
+      const head = readHead(path.join(full, f), 65536);
+      if (!/"type"\s*:\s*"user"/.test(head)) continue;
+      count++;
+      if (!cwd) cwd = cwdFromText(head);
+      try { const m = fs.statSync(path.join(full, f)).mtimeMs; if (m > latest) latest = m; } catch (_) {}
+    }
+    if (count > 0) out.push({ dir: d, path: cwd || d, count, latest });
+  }
+  out.sort((a, b) => b.latest - a.latest);
   return out;
 }
 // Smallest landscape layout that fits `count` sessions (capped at 4x4).
@@ -199,11 +243,9 @@ function pushRecent(folder) {
   if (settings.recentFolders.length > 10) settings.recentFolders.length = 10;
 }
 
-// The first real user prompt from the transcript — used as the session's "topic".
-function firstPrompt(sessionId, cwd) {
-  const file = sessionTranscriptFile(sessionId, cwd);
-  if (!file) return null;
-  for (const line of readHead(file).split('\n')) {
+// The first real user prompt from a transcript's text — used as the session's "topic".
+function firstPromptFromText(text) {
+  for (const line of text.split('\n')) {
     if (!line.trim()) continue;
     let o; try { o = JSON.parse(line); } catch (_) { continue; }
     if (o.type !== 'user') continue;
@@ -212,6 +254,10 @@ function firstPrompt(sessionId, cwd) {
     if (t && !/^\s*</.test(t)) return t.replace(/\s+/g, ' ').trim().slice(0, 120);
   }
   return null;
+}
+function firstPrompt(sessionId, cwd) {
+  const file = sessionTranscriptFile(sessionId, cwd);
+  return file ? firstPromptFromText(readHead(file)) : null;
 }
 
 function createWindow(state) {
@@ -499,6 +545,10 @@ app.whenReady().then(async () => {
     settings.seenImport[normFolder(effectiveRoot())] = true;
     saveSettings();
   });
+  // Settings importer: browse every Claude project and pull specific sessions in (each resumes in
+  // its own original folder, so nothing gets copied out of Claude's normal store).
+  ipcMain.handle('sessions:projects', () => listProjects());
+  ipcMain.handle('sessions:scanProject', (_e, dir) => ({ dir, sessions: scanProjectSessions(dir) }));
   // Resume an existing session into a live cell: kill whatever's there, then respawn with --resume.
   ipcMain.handle('cell:importSession', (e, index, sessionId, cwd, cols, rows) => {
     const rec = recFromEvent(e); if (!rec) return false;

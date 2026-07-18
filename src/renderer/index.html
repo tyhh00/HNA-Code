@@ -201,6 +201,13 @@
       background: #1c1c1c; color: var(--fg); border: 1px solid var(--border);
       border-radius: 5px; padding: 4px 6px; font-size: 12px;
     }
+    #imp-project-row { border-bottom: 1px solid #333; padding-bottom: 12px; }
+    #imp-project-row label { flex: 1 1 auto; }
+    #imp-project {
+      flex: 1 1 auto; min-width: 0; max-width: 100%; margin-left: 8px;
+      background: #1c1c1c; color: var(--fg); border: 1px solid var(--border);
+      border-radius: 5px; padding: 4px 6px; font-size: 12px;
+    }
     .link-btn { background: none; border: none; color: #7fb0ff; font-size: 12px; cursor: pointer; padding: 0; }
     .link-btn:hover { text-decoration: underline; }
     .imp-list { display: flex; flex-direction: column; gap: 2px; max-height: 42vh; overflow-y: auto;
@@ -319,6 +326,9 @@
     <div class="import-card" role="dialog" aria-label="Import existing sessions">
       <div class="import-head">✨ <span id="import-title">Resume your existing sessions</span></div>
       <p class="import-sub" id="import-desc"></p>
+      <div class="import-controls" id="imp-project-row" style="display:none">
+        <label>From folder <select id="imp-project"></select></label>
+      </div>
       <div class="import-controls">
         <button class="link-btn" id="imp-all">Select all</button>
         <button class="link-btn" id="imp-none">Select none</button>
@@ -383,6 +393,15 @@
           <div class="hint">what runs in each cell (e.g. claude)</div>
         </div>
         <input type="text" id="set-launch" placeholder="claude" />
+      </div>
+
+      <div class="section-title">Import sessions</div>
+      <div class="row">
+        <div class="grow">
+          <label class="main">Bring existing Claude sessions in</label>
+          <div class="hint">Pick specific Claude Code sessions from any project folder. Each resumes in its own folder.</div>
+        </div>
+        <button class="btn accent" id="import-open">Choose sessions…</button>
       </div>
 
       <div class="section-title">Claude Code hooks</div>

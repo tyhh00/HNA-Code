@@ -503,6 +503,8 @@ function initSettingsUI() {
   $('done-test').addEventListener('click', () => { const a = audio.done; if (a.src) { a.currentTime = 0; a.play().catch(() => {}); } });
   $('perm-test').addEventListener('click', () => { const a = audio.permission; if (a.src) { a.currentTime = 0; a.play().catch(() => {}); } });
 
+  $('import-open').addEventListener('click', () => { overlay.classList.remove('open'); openImportManual(); });
+
   const hooksStatus = $('hooks-status');
   $('hooks-connect').addEventListener('click', async () => {
     try { await window.grid.installHooks(); hooksStatus.textContent = 'Connected ✓ (restart Claude sessions to activate)'; }
@@ -635,6 +637,12 @@ function updateImportCount() {
 }
 function renderImportList() {
   const listEl = document.getElementById('imp-list');
+  if (!importScan.sessions.length) {
+    listEl.innerHTML = '<div class="recent-empty">No importable sessions found in this folder. ' +
+      'Only sessions started in this exact folder show up here.</div>';
+    updateImportCount();
+    return;
+  }
   listEl.innerHTML = importScan.sessions.map((s) =>
     `<label class="imp-row">` +
     `<input type="checkbox" data-sid="${escapeHtml(s.sessionId)}" data-mtime="${s.mtime || 0}" checked />` +
@@ -643,15 +651,40 @@ function renderImportList() {
   listEl.querySelectorAll('input').forEach((c) => c.addEventListener('change', updateImportCount));
   updateImportCount();
 }
-function showImport(scan) {
+function showImport(scan, manual = false) {
   importScan = scan;
   const n = scan.sessions.length;
-  document.getElementById('import-desc').textContent =
-    `You have ${n} Claude session${n === 1 ? '' : 's'} in ${bn(scan.folder)} that aren't in Claude Windows yet. Pick the ones to bring in.`;
+  document.getElementById('imp-project-row').style.display = manual ? '' : 'none';
+  document.getElementById('import-desc').textContent = manual
+    ? (n ? 'Pick sessions to bring into this window. Each resumes in its own original folder.'
+         : 'No resumable sessions in this project folder.')
+    : (n ? `You have ${n} Claude session${n === 1 ? '' : 's'} in ${bn(scan.folder)} that aren't in Claude Windows yet. Pick the ones to bring in.`
+         : `Looking in ${bn(scan.folder)}.`);
+  document.getElementById('imp-go').style.display = n ? '' : 'none';
   renderImportList();
   document.getElementById('import-overlay').classList.add('open');
 }
 function hideImport() { document.getElementById('import-overlay').classList.remove('open'); }
+// Settings importer: browse every Claude project folder and pull specific sessions in. Not gated by
+// the once-per-folder auto flag, and can reach sessions from any folder (not just this workspace).
+async function openImportManual() {
+  const sel = document.getElementById('imp-project');
+  let projects = [];
+  try { projects = await window.grid.listProjects(); } catch (_) {}
+  if (!projects.length) { showImport({ folder: '', sessions: [] }, true); return; }
+  const cur = String((await window.grid.getRoot()) || '').toLowerCase();
+  sel.innerHTML = projects.map((p) =>
+    `<option value="${escapeHtml(p.dir)}" title="${escapeHtml(p.path)}">${escapeHtml(bn(p.path))} — ${escapeHtml(p.path)} (${p.count})</option>`).join('');
+  const match = projects.find((p) => String(p.path).toLowerCase() === cur);
+  if (match) sel.value = match.dir;
+  sel.onchange = () => loadProjectSessions(sel.value);
+  await loadProjectSessions(sel.value);
+}
+async function loadProjectSessions(dir) {
+  let res; try { res = await window.grid.scanProject(dir); } catch (_) { res = { sessions: [] }; }
+  const folder = (res.sessions[0] && res.sessions[0].cwd) || dir;
+  showImport({ folder, sessions: res.sessions }, true);
+}
 async function maybeShowImport() {
   if (importSeenAtBoot) return;
   // If this window already resumed real sessions, there's nothing to migrate.
@@ -677,14 +710,15 @@ async function doImport(selected) {
     try { rec.term.reset(); } catch (_) {}
     const name = (here[i].title && here[i].title !== '(untitled session)') ? here[i].title.slice(0, 28) : rec.name;
     rec.name = name;
-    await window.grid.importSession(sid, here[i].sessionId, folder, rec.term.cols, rec.term.rows);
+    // Resume each session in ITS OWN folder (where Claude stored it), not the current workspace.
+    await window.grid.importSession(sid, here[i].sessionId, here[i].cwd || folder, rec.term.cols, rec.term.rows);
     window.grid.rename(sid, name);
     renderTabs(pane);
   }
   scheduleSidebar();
   for (let i = 0; i < overflow.length; i += 16) {
     const chunk = overflow.slice(i, i + 16).map((s) => ({
-      sessionId: s.sessionId, cwd: folder,
+      sessionId: s.sessionId, cwd: s.cwd || folder,
       title: (s.title && s.title !== '(untitled session)') ? s.title.slice(0, 28) : undefined,
     }));
     await window.grid.newWindowWithSessions(chunk);

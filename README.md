@@ -25,6 +25,9 @@ Built for running 12 to 16 Claude Code sessions at once without losing your plac
   in. When that folder already has Claude sessions running outside Claude Windows, it offers to
   resume them into the grid in one click (all, a selection, or only ones after a date), spilling
   into extra windows when they do not all fit.
+- **Import specific sessions any time.** Settings has a session importer that browses every folder
+  Claude knows about, so you can pull specific past sessions into the current window. Each one
+  resumes in its own original folder, so nothing is copied out of Claude's normal session store.
 - **Recent folders.** The folder button is an "Open recent" menu like VS Code, so you can jump
   between workspaces quickly.
 - **Open in VS Code.** Each cell has a button that opens its folder in VS Code.

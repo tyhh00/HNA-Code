@@ -41,6 +41,8 @@ contextBridge.exposeInMainWorld('grid', {
 
   // home page + one-click import of existing sessions
   scanWorkspace: () => ipcRenderer.invoke('workspace:scan'),
+  listProjects: () => ipcRenderer.invoke('sessions:projects'),
+  scanProject: (dir) => ipcRenderer.invoke('sessions:scanProject', dir),
   importSession: (cellId, sessionId, cwd, cols, rows) => ipcRenderer.invoke('cell:importSession', cellId, sessionId, cwd, cols, rows),
   newWindowWithSessions: (list) => ipcRenderer.invoke('window:newWithSessions', list),
   markImportSeen: () => ipcRenderer.send('workspace:importSeen'),
