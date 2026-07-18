@@ -3,4 +3,6 @@ test/*.png
 test/*.txt
 *.log
 dist/
+undefined/
 docs/FEATURELOG.md
+docs/NEXT-SESSION.md

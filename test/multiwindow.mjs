@@ -3,7 +3,7 @@
 import fs from 'fs';
 import path from 'path';
 import { _electron as electron } from 'playwright';
-import { root, sleep, runtime, fireHook, tmpUserDataDir } from './_helper.mjs';
+import { root, sleep, runtime, fireHook, tmpUserDataDir, safeClose } from './_helper.mjs';
 
 const udd = tmpUserDataDir();
 // Pre-seed w1 small so the test stays light; the second window opens at default 3x4.
@@ -13,7 +13,7 @@ fs.writeFileSync(path.join(udd, 'windows', 'w1.json'),
 
 let fail = false;
 const assert = (c, m) => { if (!c) { fail = true; console.log('FAIL:', m); } else console.log('ok:', m); };
-const launch = () => electron.launch({ args: [root, `--user-data-dir=${udd}`], cwd: root, env: { ...process.env, CW_LAUNCH_CMD: 'SHELL' } });
+const launch = () => electron.launch({ args: [root, `--user-data-dir=${udd}`], cwd: root, env: { ...process.env, CW_LAUNCH_CMD: 'SHELL', CW_SKIP_HOME: '1', CW_NO_IMPORT: '1' } });
 const idOf = (p) => p.evaluate(() => window.__windowId);
 const glowOf = (p, i) => p.evaluate((n) => window.__glow[n] || 'none', i);
 
@@ -57,16 +57,16 @@ try {
   const w1state = JSON.parse(fs.readFileSync(path.join(udd, 'windows', `${idA}.json`), 'utf8'));
   assert(w1state.title === 'Left Monitor', 'window A title persisted');
 
-  await app.close();
-} catch (e) { fail = true; console.log('ERROR:', e.message); try { await app.close(); } catch (_) {} }
+  await safeClose(app);
+} catch (e) { fail = true; console.log('ERROR:', e.message); try { await safeClose(app); } catch (_) {} }
 
 // Relaunch: both windows come back.
 const app2 = await launch();
 try {
   await sleep(3500);
   assert(app2.windows().length === 2, 'both windows reopen on relaunch');
-  await app2.close();
-} catch (e) { fail = true; console.log('ERROR2:', e.message); try { await app2.close(); } catch (_) {} }
+  await safeClose(app2);
+} catch (e) { fail = true; console.log('ERROR2:', e.message); try { await safeClose(app2); } catch (_) {} }
 
 console.log(fail ? 'RESULT: FAIL' : 'RESULT: PASS');
 fs.rmSync(udd, { recursive: true, force: true });

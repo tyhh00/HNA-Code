@@ -1,6 +1,6 @@
 // Shared test helpers: launch the app in an isolated user-data-dir, fire real hooks, read buffers.
 import { _electron as electron } from 'playwright';
-import { spawn } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -17,17 +17,44 @@ export function tmpUserDataDir() {
 }
 
 // launchCmd 'SHELL' => bare interactive shell (default for tests). userDataDir isolates state.
-export async function launchApp({ launchCmd = 'SHELL', userDataDir, extraEnv = {} } = {}) {
+// skipHome (default true) suppresses the first-run home overlay so tests reach the grid directly;
+// the home page itself is covered by home.mjs, which passes skipHome:false.
+export async function launchApp({ launchCmd = 'SHELL', userDataDir, extraEnv = {}, skipHome = true, autoImport = false } = {}) {
   const udd = userDataDir || tmpUserDataDir();
   const app = await electron.launch({
     args: [root, `--user-data-dir=${udd}`],
     cwd: root,
-    env: { ...process.env, CW_LAUNCH_CMD: launchCmd, ...extraEnv },
+    env: {
+      ...process.env, CW_LAUNCH_CMD: launchCmd,
+      ...(skipHome ? { CW_SKIP_HOME: '1' } : {}),
+      ...(autoImport ? {} : { CW_NO_IMPORT: '1' }), // suppress the import prompt unless a test wants it
+      ...extraEnv,
+    },
   });
   const win = await app.firstWindow();
   await win.waitForSelector('.xterm', { timeout: 20000 });
+
+  // On this box, a full graceful quit can hang on ConPTY teardown (the process never exits, even on
+  // the committed baseline). Window state is written synchronously on the window 'close' event, so a
+  // brief grace period lets that flush; then we force-kill the process so tests never wedge.
+  const origClose = app.close.bind(app);
+  app.close = () => forceClose(app, origClose);
   return { app, win, userDataDir: udd };
 }
+
+// A full graceful quit can hang on ConPTY teardown on this box (the process never exits, even on the
+// committed baseline). Window state is written synchronously on the window 'close' event, so a brief
+// grace period lets that flush; then we force-kill the whole tree so tests never wedge, and wait for
+// Windows to release the leveldb/Local Storage file locks before temp-dir cleanup.
+async function forceClose(app, gracefulClose) {
+  const proc = app.process();
+  const pid = proc && proc.pid;
+  try { await Promise.race([gracefulClose(), sleep(4000)]); } catch (_) {}
+  if (pid) { try { spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' }); } catch (_) {} }
+  await sleep(700);
+}
+// For raw electron.launch() tests: call this instead of app.close() so they never wedge on teardown.
+export function safeClose(app) { return forceClose(app, app.close.bind(app)); }
 
 export function runtime(userDataDir) {
   return JSON.parse(fs.readFileSync(path.join(userDataDir, 'runtime.json'), 'utf8'));

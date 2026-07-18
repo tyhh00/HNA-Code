@@ -58,6 +58,7 @@ const settings = {
   doneSound: { enabled: false, path: null },
   permissionSound: { enabled: false, path: null },
   sidebarCollapsed: false,
+  recentFolders: [],
 };
 const persistSettings = () => window.grid.settingsChanged(settings);
 
@@ -516,16 +517,46 @@ function initSettingsUI() {
 function shortFolder(p) { if (!p) return 'home'; return String(p).split(/[\\/]/).filter(Boolean).pop() || p; }
 async function initFolderUI() {
   const btn = document.getElementById('folder-btn');
+  const menu = document.getElementById('folder-menu');
   const label = document.getElementById('folder-name');
   const root = await window.grid.getRoot();
+  const curNorm = String(root || '').toLowerCase();
   label.textContent = shortFolder(root);
-  btn.title = `New sessions start in:\n${root}\n(click to change — reopens the app)`;
-  btn.addEventListener('click', async () => {
-    const dir = await window.grid.pickRoot();
-    if (!dir) return;
-    label.textContent = shortFolder(dir);
-    window.grid.relaunchApp();
+  btn.title = `New sessions start in:\n${root}\n(click for recent folders)`;
+
+  function buildMenu() {
+    const recents = (settings.recentFolders || []).filter(Boolean);
+    let html = '<div class="group-label">Open recent</div>';
+    if (recents.length) {
+      html += recents.map((f) => {
+        const active = String(f).toLowerCase() === curNorm ? ' active' : '';
+        return `<div class="menu-item${active}" data-folder="${escapeHtml(f)}">` +
+          `<span class="fm-name">${escapeHtml(bn(f))}</span>` +
+          `<span class="fm-path">${escapeHtml(f)}</span></div>`;
+      }).join('');
+    } else {
+      html += '<div class="group-label" style="color:#666;text-transform:none">No recent folders</div>';
+    }
+    html += '<div class="menu-item open-row" data-open="1">📂 Open folder…</div>';
+    menu.innerHTML = html;
+    menu.querySelectorAll('.menu-item[data-folder]').forEach((el) => el.addEventListener('click', async () => {
+      menu.classList.remove('open');
+      if (el.dataset.folder.toLowerCase() === curNorm) return; // already here
+      const ok = await window.grid.setRoot(el.dataset.folder);
+      if (ok) window.grid.relaunchApp();
+    }));
+    menu.querySelector('[data-open]').addEventListener('click', async () => {
+      menu.classList.remove('open');
+      const dir = await window.grid.pickRoot();
+      if (dir) window.grid.relaunchApp();
+    });
+  }
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (!menu.classList.contains('open')) buildMenu();
+    menu.classList.toggle('open');
   });
+  document.addEventListener('click', () => menu.classList.remove('open'));
 }
 
 async function initWindowUI() {
@@ -547,6 +578,137 @@ async function initWindowUI() {
   document.getElementById('new-window-btn').addEventListener('click', () => window.grid.newWindow());
 }
 
+// ---- Home page + one-click import of existing sessions (#24) ----------------
+const bn = (p) => (!p ? 'home' : String(p).split(/[\\/]/).filter(Boolean).pop() || p);
+function fitLayoutKey(n) {
+  const cand = LAYOUTS.filter((l) => l.group === 'Landscape').sort((a, b) => a.rows * a.cols - b.rows * b.cols);
+  const L = cand.find((l) => l.rows * l.cols >= n) || cand[cand.length - 1];
+  return L ? L.key : '4x4';
+}
+function showHome() { document.getElementById('home-overlay').classList.add('open'); }
+function hideHome() { document.getElementById('home-overlay').classList.remove('open'); }
+function renderRecents() {
+  const el = document.getElementById('home-recents');
+  const recents = (settings.recentFolders || []).filter(Boolean);
+  if (!recents.length) { el.innerHTML = '<div class="recent-empty">No recent folders yet.</div>'; return; }
+  el.innerHTML = recents.map((f) =>
+    `<div class="recent-item" data-folder="${escapeHtml(f)}">` +
+    `<span class="recent-name">${escapeHtml(bn(f))}</span>` +
+    `<span class="recent-path">${escapeHtml(f)}</span></div>`).join('');
+  el.querySelectorAll('.recent-item').forEach((row) => row.addEventListener('click', async () => {
+    const folder = row.dataset.folder;
+    const ok = await window.grid.setRoot(folder);
+    if (ok) window.grid.relaunchApp();
+  }));
+}
+function initHome() {
+  renderRecents();
+  document.getElementById('home-btn').addEventListener('click', () => { renderRecents(); showHome(); });
+  document.getElementById('home-open').addEventListener('click', async () => {
+    const dir = await window.grid.pickRoot();
+    if (dir) window.grid.relaunchApp();
+  });
+  document.getElementById('home-skip').addEventListener('click', () => {
+    window.grid.markWorkspaceChosen();
+    hideHome();
+    maybeShowImport(); // still offer to import whatever's already in this folder
+  });
+}
+
+let importScan = null; // { folder, sessions:[{sessionId,title,mtime}] }
+function fmtDate(ms) {
+  if (!ms) return '';
+  try { return new Date(ms).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }); }
+  catch (_) { return ''; }
+}
+function importChecked() {
+  return [...document.querySelectorAll('#imp-list .imp-row input:checked')].map((c) => c.dataset.sid);
+}
+function importCheckedSessions() {
+  const ids = new Set(importChecked());
+  return (importScan ? importScan.sessions : []).filter((s) => ids.has(s.sessionId));
+}
+function updateImportCount() {
+  const n = importChecked().length;
+  document.getElementById('imp-count').textContent = `${n} selected`;
+  document.getElementById('imp-go').textContent = n > 0 ? `Resume ${n} session${n === 1 ? '' : 's'}` : 'Resume selected';
+}
+function renderImportList() {
+  const listEl = document.getElementById('imp-list');
+  listEl.innerHTML = importScan.sessions.map((s) =>
+    `<label class="imp-row">` +
+    `<input type="checkbox" data-sid="${escapeHtml(s.sessionId)}" data-mtime="${s.mtime || 0}" checked />` +
+    `<span class="imp-body"><span class="imp-title">${escapeHtml(s.title)}</span>` +
+    `<span class="imp-date">${fmtDate(s.mtime)}</span></span></label>`).join('');
+  listEl.querySelectorAll('input').forEach((c) => c.addEventListener('change', updateImportCount));
+  updateImportCount();
+}
+function showImport(scan) {
+  importScan = scan;
+  const n = scan.sessions.length;
+  document.getElementById('import-desc').textContent =
+    `You have ${n} Claude session${n === 1 ? '' : 's'} in ${bn(scan.folder)} that aren't in Claude Windows yet. Pick the ones to bring in.`;
+  renderImportList();
+  document.getElementById('import-overlay').classList.add('open');
+}
+function hideImport() { document.getElementById('import-overlay').classList.remove('open'); }
+async function maybeShowImport() {
+  if (importSeenAtBoot) return;
+  // If this window already resumed real sessions, there's nothing to migrate.
+  const hasReal = Object.values((savedState && savedState.cells) || {}).some((c) => c && c.sessionId);
+  if (hasReal) return;
+  let scan;
+  try { scan = await window.grid.scanWorkspace(); } catch (_) { return; }
+  if (scan && scan.sessions && scan.sessions.length) showImport(scan);
+}
+async function doImport(selected) {
+  hideImport();
+  window.grid.markImportSeen();
+  importSeenAtBoot = true;
+  if (!selected.length) return;
+  const folder = importScan ? importScan.folder : null;
+  if (panes.length < selected.length) setLayout(fitLayoutKey(selected.length));
+  const capacity = panes.length;
+  const here = selected.slice(0, capacity);
+  const overflow = selected.slice(capacity);
+  for (let i = 0; i < here.length; i++) {
+    const pane = panes[i]; if (!pane || !pane.active) continue;
+    const sid = pane.active; const rec = terms.get(sid); if (!rec) continue;
+    try { rec.term.reset(); } catch (_) {}
+    const name = (here[i].title && here[i].title !== '(untitled session)') ? here[i].title.slice(0, 28) : rec.name;
+    rec.name = name;
+    await window.grid.importSession(sid, here[i].sessionId, folder, rec.term.cols, rec.term.rows);
+    window.grid.rename(sid, name);
+    renderTabs(pane);
+  }
+  scheduleSidebar();
+  for (let i = 0; i < overflow.length; i += 16) {
+    const chunk = overflow.slice(i, i + 16).map((s) => ({
+      sessionId: s.sessionId, cwd: folder,
+      title: (s.title && s.title !== '(untitled session)') ? s.title.slice(0, 28) : undefined,
+    }));
+    await window.grid.newWindowWithSessions(chunk);
+  }
+}
+function initImport() {
+  document.getElementById('imp-all').addEventListener('click', () => {
+    document.querySelectorAll('#imp-list .imp-row input').forEach((c) => (c.checked = true)); updateImportCount();
+  });
+  document.getElementById('imp-none').addEventListener('click', () => {
+    document.querySelectorAll('#imp-list .imp-row input').forEach((c) => (c.checked = false)); updateImportCount();
+  });
+  document.getElementById('imp-after').addEventListener('change', (e) => {
+    const cut = e.target.value ? new Date(e.target.value).getTime() : 0;
+    document.querySelectorAll('#imp-list .imp-row input').forEach((c) => { c.checked = (+c.dataset.mtime >= cut); });
+    updateImportCount();
+  });
+  document.getElementById('imp-skip').addEventListener('click', () => {
+    window.grid.markImportSeen(); importSeenAtBoot = true; hideImport();
+  });
+  document.getElementById('imp-go').addEventListener('click', () => doImport(importCheckedSessions()));
+}
+let importSeenAtBoot = false;
+
 function afterSettings() {
   window.__settings = settings;
   loadSoundInto('done', settings.doneSound && settings.doneSound.path);
@@ -555,6 +717,8 @@ function afterSettings() {
   initFolderUI();
   initWindowUI();
   initSidebar();
+  initHome();
+  initImport();
   applyPerfClass();
 }
 
@@ -577,5 +741,11 @@ function afterSettings() {
   updateLayoutMenuActive(L.key);
   buildInitial(rows, cols);
   afterSettings();
+
+  // Home page on first run; otherwise offer to import this folder's existing sessions.
+  importSeenAtBoot = !!(savedState && savedState.importSeen);
+  if (savedState && savedState.firstRun) { renderRecents(); showHome(); }
+  else maybeShowImport();
+
   window.__ready = true;
 })();

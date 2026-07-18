@@ -32,6 +32,9 @@ let settings = {
   sidebarCollapsed: false,
   doneSound: { enabled: false, path: null },
   permissionSound: { enabled: false, path: null },
+  recentFolders: [],       // most-recent-first list of opened workspace folders (home page)
+  workspaceChosen: false,  // true once the user has picked a folder (or dismissed the home page)
+  seenImport: {},          // normFolder -> true; a folder whose import prompt was already handled
 };
 function settingsFile() { return path.join(app.getPath('userData'), 'settings.json'); }
 function loadSettings() {
@@ -164,6 +167,38 @@ function isResumable(sessionId, cwd) {
   const file = sessionTranscriptFile(sessionId, cwd);
   return !!file && /"type"\s*:\s*"user"/.test(readHead(file));
 }
+// Encode a folder path the way Claude stores its per-project transcript directory.
+function encodeProject(folder) { return String(folder).replace(/[:\\/]/g, '-'); }
+// All resumable Claude sessions that live under `folder`, newest first, minus any in `exclude`.
+function scanWorkspaceSessions(folder, exclude = new Set()) {
+  const dir = path.join(claudeDir(), 'projects', encodeProject(folder));
+  const out = [];
+  let names = [];
+  try { names = fs.readdirSync(dir); } catch (_) { return out; }
+  for (const f of names) {
+    if (!f.endsWith('.jsonl')) continue;
+    const sessionId = f.slice(0, -6);
+    if (exclude.has(sessionId)) continue;
+    const file = path.join(dir, f);
+    if (!/"type"\s*:\s*"user"/.test(readHead(file))) continue; // only ones with a real conversation
+    let mtime = 0; try { mtime = fs.statSync(file).mtimeMs; } catch (_) {}
+    out.push({ sessionId, title: firstPrompt(sessionId, folder) || '(untitled session)', mtime });
+  }
+  out.sort((a, b) => b.mtime - a.mtime);
+  return out;
+}
+// Smallest landscape layout that fits `count` sessions (capped at 4x4).
+const FIT_LAYOUTS = [{ rows: 2, cols: 2 }, { rows: 2, cols: 4 }, { rows: 3, cols: 4 }, { rows: 4, cols: 4 }];
+function pickFitLayout(count) { for (const L of FIT_LAYOUTS) if (L.rows * L.cols >= count) return L; return { rows: 4, cols: 4 }; }
+// Remember a folder at the top of the recent-workspaces list (deduped, capped).
+function pushRecent(folder) {
+  if (!folder) return;
+  const norm = normFolder(folder);
+  settings.recentFolders = (settings.recentFolders || []).filter((f) => normFolder(f) !== norm);
+  settings.recentFolders.unshift(folder);
+  if (settings.recentFolders.length > 10) settings.recentFolders.length = 10;
+}
+
 // The first real user prompt from the transcript — used as the session's "topic".
 function firstPrompt(sessionId, cwd) {
   const file = sessionTranscriptFile(sessionId, cwd);
@@ -356,12 +391,23 @@ app.whenReady().then(async () => {
   loadSettings();
   currentWorkspace = resolveWorkspace();
   settings.lastWorkspace = currentWorkspace; // remember this folder for the next plain launch
+  pushRecent(currentWorkspace);
   writeJsonAtomic(settingsFile(), settings);
   if (settings.autoHooks !== false) { try { hooks.installHooks(HOOK_SCRIPT); } catch (_) {} }
   await initSignal();
   applyPerfSetting();
 
-  ipcMain.handle('state:get', (e) => { const rec = recFromEvent(e); return rec ? { ...rec.state, settings } : { settings }; });
+  ipcMain.handle('state:get', (e) => {
+    const rec = recFromEvent(e);
+    const root = effectiveRoot();
+    // Home page shows only on a genuine first run (no folder chosen yet, none forced via env).
+    // CW_SKIP_HOME lets tests launch straight into the grid.
+    const firstRun = !settings.workspaceChosen && !process.env.CW_ROOT_FOLDER && !process.env.CW_SKIP_HOME;
+    // CW_NO_IMPORT lets tests launch without the auto-import prompt firing.
+    const importSeen = !!process.env.CW_NO_IMPORT || !!(settings.seenImport && settings.seenImport[normFolder(root)]);
+    const extra = { settings, root, firstRun, importSeen };
+    return rec ? { ...rec.state, ...extra } : extra;
+  });
   ipcMain.handle('window:info', (e) => { const rec = recFromEvent(e); return rec ? { windowId: rec.state.windowId, title: rec.state.title } : null; });
   ipcMain.handle('session:topic', (e, index) => {
     const rec = recFromEvent(e); if (!rec) return null;
@@ -421,10 +467,71 @@ app.whenReady().then(async () => {
     const r = await dialog.showOpenDialog(rec ? rec.win : null, { title: 'Open folder as workspace', properties: ['openDirectory'] });
     if (r.canceled || !r.filePaths[0]) return null;
     settings.lastWorkspace = r.filePaths[0];
+    settings.workspaceChosen = true;
+    pushRecent(r.filePaths[0]);
     writeJsonAtomic(settingsFile(), settings); // persist before the renderer relaunches
     return r.filePaths[0];
   });
+  // Switch to a specific folder (e.g. a recent one) without a dialog; renderer then relaunches.
+  ipcMain.handle('root:set', (_e, folder) => {
+    try { if (!folder || !fs.existsSync(folder)) return null; } catch (_) { return null; }
+    settings.lastWorkspace = folder;
+    settings.workspaceChosen = true;
+    pushRecent(folder);
+    writeJsonAtomic(settingsFile(), settings);
+    return folder;
+  });
   ipcMain.handle('root:get', () => effectiveRoot());
+  ipcMain.on('workspace:chosen', () => { settings.workspaceChosen = true; saveSettings(); });
+
+  // ---- one-click import of a folder's existing Claude sessions (#24) --------
+  ipcMain.handle('workspace:scan', () => {
+    const folder = effectiveRoot();
+    const exclude = new Set();
+    for (const rec of windows.values()) {
+      if (normFolder(rec.state.workspace) !== normFolder(folder)) continue;
+      for (const c of Object.values(rec.state.cells || {})) if (c && c.sessionId) exclude.add(c.sessionId);
+    }
+    return { folder, sessions: scanWorkspaceSessions(folder, exclude) };
+  });
+  ipcMain.on('workspace:importSeen', () => {
+    settings.seenImport = settings.seenImport || {};
+    settings.seenImport[normFolder(effectiveRoot())] = true;
+    saveSettings();
+  });
+  // Resume an existing session into a live cell: kill whatever's there, then respawn with --resume.
+  ipcMain.handle('cell:importSession', (e, index, sessionId, cwd, cols, rows) => {
+    const rec = recFromEvent(e); if (!rec) return false;
+    const gid = `${rec.state.windowId}#${index}`;
+    const p = sessions.get(gid); if (p) { try { p.kill(); } catch (_) {} sessions.delete(gid); }
+    const c = cellRec(rec, index); c.sessionId = sessionId; c.cwd = cwd || effectiveRoot();
+    scheduleWindowSave(rec);
+    spawnCell(rec.state.windowId, index, { cwd: c.cwd, resumeId: sessionId, cols, rows });
+    return true;
+  });
+  // Overflow import: create a new window whose cells are pre-seeded to resume `sessionList`.
+  ipcMain.handle('window:newWithSessions', (_e, sessionList) => {
+    if (!Array.isArray(sessionList) || !sessionList.length) return null;
+    const { n, id } = nextWindowInfo();
+    const L = pickFitLayout(sessionList.length);
+    const st = defaultWindowState(id, n);
+    st.layout = { rows: L.rows, cols: L.cols };
+    const total = Math.max(L.rows * L.cols, sessionList.length);
+    st.panes = [];
+    for (let i = 0; i < total; i++) {
+      const sid = String(i);
+      if (i < sessionList.length) {
+        const s = sessionList[i];
+        st.cells[sid] = { sessionId: s.sessionId, cwd: s.cwd || effectiveRoot() };
+        if (s.title) st.cells[sid].name = s.title;
+      }
+      st.panes.push({ tabs: [sid], active: sid });
+    }
+    st.seq = total;
+    writeJsonAtomic(windowStateFile(id), st);
+    createWindow(st);
+    return id;
+  });
   ipcMain.on('app:relaunch', () => { for (const rec of windows.values()) saveWindowNow(rec); app.relaunch(); app.exit(0); });
   ipcMain.on('open:external', (_e, url) => { if (/^https?:\/\//.test(url)) shell.openExternal(url); });
   ipcMain.on('cell:openInVsCode', (e, index) => {

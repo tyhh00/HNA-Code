@@ -21,6 +21,12 @@ Built for running 12 to 16 Claude Code sessions at once without losing your plac
 - **Editable names.** Double-click or right-click a cell header to rename. The name is bound to
   the session, so it follows that conversation across restarts.
 - **Project folder.** Point the app at a folder and new sessions all start there.
+- **Home page and one-click import.** On first run, a welcome page lets you open a folder to work
+  in. When that folder already has Claude sessions running outside Claude Windows, it offers to
+  resume them into the grid in one click (all, a selection, or only ones after a date), spilling
+  into extra windows when they do not all fit.
+- **Recent folders.** The folder button is an "Open recent" menu like VS Code, so you can jump
+  between workspaces quickly.
 - **Open in VS Code.** Each cell has a button that opens its folder in VS Code.
 - **Your config stays yours.** Glow hooks are added to `~/.claude/settings.json` on startup, but
   only Claude Windows entries are touched. Your own hooks are preserved, and you can disconnect.

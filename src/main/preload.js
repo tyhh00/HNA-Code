@@ -34,8 +34,16 @@ contextBridge.exposeInMainWorld('grid', {
 
   // folder + vscode
   pickRoot: () => ipcRenderer.invoke('root:pick'),
+  setRoot: (folder) => ipcRenderer.invoke('root:set', folder),
   getRoot: () => ipcRenderer.invoke('root:get'),
   relaunchApp: () => ipcRenderer.send('app:relaunch'),
+  markWorkspaceChosen: () => ipcRenderer.send('workspace:chosen'),
+
+  // home page + one-click import of existing sessions
+  scanWorkspace: () => ipcRenderer.invoke('workspace:scan'),
+  importSession: (cellId, sessionId, cwd, cols, rows) => ipcRenderer.invoke('cell:importSession', cellId, sessionId, cwd, cols, rows),
+  newWindowWithSessions: (list) => ipcRenderer.invoke('window:newWithSessions', list),
+  markImportSeen: () => ipcRenderer.send('workspace:importSeen'),
   openInVsCode: (cellId) => ipcRenderer.send('cell:openInVsCode', cellId),
   openExternal: (url) => ipcRenderer.send('open:external', url),
 

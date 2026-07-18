@@ -11,7 +11,7 @@
     "pack:portable": "electron-builder --win portable",
     "pack:dir": "electron-builder --dir",
     "icons": "node build/gen-icons.mjs",
-    "test": "node test/hooks.cjs && node test/smoke.mjs && node test/grid.mjs && node test/signal.mjs && node test/glow.mjs && node test/persist.mjs && node test/settings.mjs && node test/multiwindow.mjs && node test/perf.mjs",
+    "test": "node test/hooks.cjs && node test/smoke.mjs && node test/grid.mjs && node test/signal.mjs && node test/glow.mjs && node test/persist.mjs && node test/settings.mjs && node test/multiwindow.mjs && node test/perf.mjs && node test/tabs.mjs && node test/workspaces.mjs && node test/sidebar.mjs && node test/home.mjs && node test/import.mjs",
     "test:smoke": "node test/smoke.mjs",
     "test:grid": "node test/grid.mjs",
     "test:signal": "node test/signal.mjs",
@@ -22,7 +22,9 @@
     "test:multiwindow": "node test/multiwindow.mjs",
     "test:tabs": "node test/tabs.mjs",
     "test:workspaces": "node test/workspaces.mjs",
-    "test:sidebar": "node test/sidebar.mjs"
+    "test:sidebar": "node test/sidebar.mjs",
+    "test:import": "node test/import.mjs",
+    "test:home": "node test/home.mjs"
   },
   "dependencies": {
     "@lydell/node-pty": "^1.1.0",

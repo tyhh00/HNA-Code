@@ -33,7 +33,13 @@
       max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
     #toolbar .folder-btn:hover { background: #3d3d3d; }
+    #toolbar .folder-btn .caret { color: #888; font-size: 10px; }
     #toolbar .status { margin-left: auto; font-size: 11px; color: #888; }
+    #folder-menu { min-width: 240px; max-width: 340px; }
+    #folder-menu .menu-item { flex-direction: column; align-items: flex-start; gap: 1px; }
+    #folder-menu .fm-name { font-size: 12px; color: #e6e6e6; }
+    #folder-menu .fm-path { font-size: 10px; color: #7f8993; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #folder-menu .menu-item.open-row { flex-direction: row; align-items: center; color: #7fb0ff; border-top: 1px solid var(--border); border-radius: 0; margin-top: 4px; padding-top: 8px; }
 
     /* Custom pickers (layout, help) */
     .picker { position: relative; }
@@ -151,6 +157,63 @@
                  border-color: #6aa8ff; }
     }
 
+    /* Home + import overlays (#24) */
+    #home-overlay, #import-overlay {
+      position: fixed; inset: 0; background: rgba(12,12,14,.82); backdrop-filter: blur(3px);
+      display: none; align-items: center; justify-content: center; z-index: 30;
+    }
+    #home-overlay.open, #import-overlay.open { display: flex; }
+    .home-card, .import-card {
+      width: 560px; max-width: 92vw; max-height: 88vh; overflow-y: auto; background: #202124;
+      border: 1px solid var(--border); border-radius: 14px; padding: 30px 32px;
+      box-shadow: 0 20px 60px rgba(0,0,0,.6);
+    }
+    .home-brand { display: flex; align-items: center; gap: 11px; font-size: 22px; font-weight: 600; }
+    .home-sub { margin: 8px 0 22px; font-size: 13px; color: #9aa4ae; }
+    .home-actions { display: flex; gap: 10px; margin-bottom: 22px; }
+    .big-btn {
+      display: inline-flex; align-items: center; gap: 8px; background: var(--accent); border: none;
+      color: #fff; border-radius: 8px; padding: 10px 16px; font-size: 13px; font-weight: 600; cursor: pointer;
+    }
+    .big-btn:hover { filter: brightness(1.1); }
+    .ghost-btn {
+      background: #2d2e31; color: var(--fg); border: 1px solid var(--border);
+      border-radius: 8px; padding: 10px 16px; font-size: 13px; cursor: pointer;
+    }
+    .ghost-btn:hover { background: #37383b; }
+    .recent-label { font-size: 11px; text-transform: uppercase; letter-spacing: .6px; color: #777; margin: 6px 0 8px; }
+    .recent-list { display: flex; flex-direction: column; gap: 2px; }
+    .recent-item {
+      display: flex; flex-direction: column; gap: 1px; padding: 8px 10px; border-radius: 7px; cursor: pointer;
+      border: 1px solid transparent;
+    }
+    .recent-item:hover { background: #2a2b2e; border-color: var(--border); }
+    .recent-name { font-size: 13px; color: #e6e6e6; }
+    .recent-path { font-size: 11px; color: #7f8993; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .recent-empty { font-size: 12px; color: #777; padding: 4px 2px; }
+
+    .import-head { display: flex; align-items: center; gap: 10px; font-size: 18px; font-weight: 600; }
+    .import-sub { margin: 8px 0 4px; font-size: 13px; color: #9aa4ae; }
+    .import-controls { display: flex; align-items: center; gap: 10px; margin: 16px 0 10px; flex-wrap: wrap; }
+    .import-controls .spacer { flex: 1 1 auto; }
+    .import-controls label { font-size: 12px; color: #9aa4ae; display: flex; align-items: center; gap: 6px; }
+    .import-controls input[type="date"] {
+      background: #1c1c1c; color: var(--fg); border: 1px solid var(--border);
+      border-radius: 5px; padding: 4px 6px; font-size: 12px;
+    }
+    .link-btn { background: none; border: none; color: #7fb0ff; font-size: 12px; cursor: pointer; padding: 0; }
+    .link-btn:hover { text-decoration: underline; }
+    .imp-list { display: flex; flex-direction: column; gap: 2px; max-height: 42vh; overflow-y: auto;
+      border: 1px solid var(--border); border-radius: 8px; padding: 6px; }
+    .imp-row { display: flex; align-items: flex-start; gap: 9px; padding: 7px 8px; border-radius: 6px; }
+    .imp-row:hover { background: #2a2b2e; }
+    .imp-row input { margin-top: 3px; }
+    .imp-body { min-width: 0; flex: 1 1 auto; display: flex; flex-direction: column; gap: 1px; }
+    .imp-title { font-size: 13px; color: #e2e2e2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .imp-date { font-size: 11px; color: #7f8993; }
+    .import-foot { display: flex; align-items: center; gap: 8px; margin-top: 18px; }
+    .import-foot .spacer { flex: 1 1 auto; }
+
     /* Settings overlay */
     #settings-overlay {
       position: fixed; inset: 0; background: rgba(0,0,0,.55);
@@ -212,7 +275,11 @@
       <button id="layout-btn" class="picker-btn" title="Layout"></button>
       <div id="layout-menu" class="menu"></div>
     </div>
-    <button id="folder-btn" class="folder-btn" title="Open folder, new sessions start here">📁 <span id="folder-name">home</span></button>
+    <button id="home-btn" class="icon-btn" title="Home / open a folder">🏠</button>
+    <div id="folder-picker" class="picker">
+      <button id="folder-btn" class="folder-btn" title="Open folder / recent (new sessions start here)">📁 <span id="folder-name">home</span> <span class="caret">▾</span></button>
+      <div id="folder-menu" class="menu"></div>
+    </div>
     <span class="status" id="status"></span>
     <span id="perf-total" title="This window: total CPU / RAM of its Claude sessions"></span>
     <div id="help-picker" class="picker">
@@ -224,6 +291,48 @@
   <div id="main-row">
     <aside id="sidebar"><div id="sb-list"></div></aside>
     <div id="grid"></div>
+  </div>
+
+  <div id="home-overlay">
+    <div class="home-card" role="dialog" aria-label="Open a folder">
+      <div class="home-brand">
+        <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true">
+          <g stroke="#d97757" stroke-width="2.2" stroke-linecap="round">
+            <line x1="12" y1="3.5" x2="12" y2="20.5"/>
+            <line x1="4.4" y1="7.75" x2="19.6" y2="16.25"/>
+            <line x1="4.4" y1="16.25" x2="19.6" y2="7.75"/>
+          </g><circle cx="12" cy="12" r="2.5" fill="#e8a893"/>
+        </svg>
+        Claude Windows
+      </div>
+      <p class="home-sub">Open a folder to work in. Your Claude sessions there resume where you left off.</p>
+      <div class="home-actions">
+        <button class="big-btn" id="home-open">📂 Open folder…</button>
+        <button class="ghost-btn" id="home-skip">Continue in current folder</button>
+      </div>
+      <div class="recent-label">Recent folders</div>
+      <div class="recent-list" id="home-recents"></div>
+    </div>
+  </div>
+
+  <div id="import-overlay">
+    <div class="import-card" role="dialog" aria-label="Import existing sessions">
+      <div class="import-head">✨ <span id="import-title">Resume your existing sessions</span></div>
+      <p class="import-sub" id="import-desc"></p>
+      <div class="import-controls">
+        <button class="link-btn" id="imp-all">Select all</button>
+        <button class="link-btn" id="imp-none">Select none</button>
+        <span class="spacer"></span>
+        <label>Only after <input type="date" id="imp-after" /></label>
+      </div>
+      <div class="imp-list" id="imp-list"></div>
+      <div class="import-foot">
+        <span class="hint" id="imp-count" style="font-size:12px;color:#9aa4ae"></span>
+        <span class="spacer"></span>
+        <button class="ghost-btn" id="imp-skip">Skip</button>
+        <button class="big-btn" id="imp-go">Resume selected</button>
+      </div>
+    </div>
   </div>
 
   <div id="settings-overlay">
