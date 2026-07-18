@@ -1,7 +1,7 @@
 {
-  "name": "claude-windows",
+  "name": "hna-code",
   "version": "0.1.0",
-  "description": "Grid manager for Claude Code sessions: many sessions in a configurable grid, glow when a session is waiting on you, resume the whole board after a restart.",
+  "description": "HNA-Code (Humans and Agents Code): run many Claude Code sessions in a configurable grid, glow when a session is waiting on you, resume the whole board after a restart.",
   "main": "src/main/main.js",
   "author": "tyhh00",
   "license": "MIT",
@@ -40,8 +40,8 @@
     "png-to-ico": "^3.0.2"
   },
   "build": {
-    "appId": "com.tyhh00.claude-windows",
-    "productName": "Claude Windows",
+    "appId": "com.tyhh00.hna-code",
+    "productName": "HNA-Code",
     "asar": false,
     "directories": { "output": "dist", "buildResources": "build" },
     "files": ["src/**/*", "build/icon.png", "build/icon.ico", "build/icon.svg", "package.json", "node_modules/**/*"],
@@ -50,8 +50,8 @@
       "oneClick": false,
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
-      "shortcutName": "Claude Windows"
+      "shortcutName": "HNA-Code"
     },
-    "portable": { "artifactName": "ClaudeWindows-${version}-portable.exe" }
+    "portable": { "artifactName": "HNA-Code-${version}-portable.exe" }
   }
 }

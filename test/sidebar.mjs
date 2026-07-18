@@ -1,4 +1,5 @@
-// Sidebar: lists this window's sessions, floats needs-you to the top, click activates, collapses.
+// Sidebar: lists only REAL sessions (resumed / active), floats needs-you to the top, click
+// activates, and collapses from a control on the SESSIONS header row.
 import fs from 'fs';
 import path from 'path';
 import { launchApp, sleep, shot, runtime, fireHook, tmpUserDataDir } from './_helper.mjs';
@@ -15,30 +16,40 @@ const { app, win, userDataDir } = await launchApp({ launchCmd: 'SHELL', userData
 try {
   await win.waitForFunction(() => window.__ready === true, { timeout: 15000 });
   await sleep(1500);
-  assert((await win.locator('#sb-list .sb-item').count()) === 4, 'sidebar lists all 4 sessions');
+
+  // Fresh cells with no real activity do NOT clutter the sidebar.
+  assert((await win.locator('#sb-list .sb-item').count()) === 0, 'fresh cells are not listed');
+  assert((await win.locator('#sb-list .sb-empty').count()) === 1, 'empty-state shown when nothing is real');
 
   const rt = runtime(userDataDir);
-  await fireHook({ kind: 'permission', cell: 3, port: rt.port, token: rt.token });
+  await fireHook({ kind: 'idle', cell: 0, port: rt.port, token: rt.token });
   await fireHook({ kind: 'idle', cell: 1, port: rt.port, token: rt.token });
-  await sleep(800);
+  await fireHook({ kind: 'permission', cell: 3, port: rt.port, token: rt.token });
+  await sleep(900);
 
+  assert((await win.locator('#sb-list .sb-item').count()) === 3, 'only the 3 active sessions are listed');
   assert((await win.locator('#sb-list .sb-section').first().textContent()) === 'Needs you', 'Needs-you section is first');
   const firstSid = await win.locator('#sb-list .sb-item').first().getAttribute('data-sid');
   assert(firstSid === '3', `permission session floated to the very top (got ${firstSid})`);
-  assert((await win.locator('#sb-list .sb-dot.permission, #sb-list .sb-dot.idle').count()) === 2, 'two glowing sessions surfaced');
+  assert((await win.locator('#sb-list .sb-dot.permission, #sb-list .sb-dot.idle').count()) === 3, 'three glowing sessions surfaced');
   await win.screenshot({ path: shot('shot-13-sidebar.png') });
 
   await win.locator('#sb-list .sb-item').first().click();
   await sleep(400);
   assert((await win.locator('.cell[data-pane="3"]').getAttribute('data-cell')) === '3', 'clicking a sidebar row activates that session');
 
+  // Collapse from the header control; re-open from the toolbar affordance that appears while collapsed.
+  await win.locator('#sb-collapse').click();
+  await sleep(300);
+  assert(await win.evaluate(() => document.body.classList.contains('sb-collapsed')), 'header control collapses the sidebar');
+  assert(await win.locator('#sb-toggle').isVisible(), 'toolbar re-open affordance appears while collapsed');
   await win.locator('#sb-toggle').click();
   await sleep(300);
-  assert(await win.evaluate(() => document.body.classList.contains('sb-collapsed')), 'toggle collapses the sidebar');
+  assert(!(await win.evaluate(() => document.body.classList.contains('sb-collapsed'))), 'toolbar affordance re-opens the sidebar');
 
   console.log(fail ? 'RESULT: FAIL' : 'RESULT: PASS');
 } finally {
   await app.close();
 }
-fs.rmSync(udd, { recursive: true, force: true });
+fs.rmSync(udd, { recursive: true, force: true, maxRetries: 3, retryDelay: 300 });
 if (fail) process.exit(1);

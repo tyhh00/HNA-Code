@@ -1,4 +1,4 @@
-# Claude Code hook -> Claude Windows signal bridge.
+# Claude Code hook -> HNA-Code signal bridge.
 # Registered for SessionStart / Notification(idle_prompt,permission_prompt) / Stop.
 # Claude runs this with the hook's JSON on stdin; -Kind tells us which event fired.
 # The cell id + signal port + token arrive via env vars the app injected when it spawned claude.

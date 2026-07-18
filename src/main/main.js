@@ -35,6 +35,7 @@ let settings = {
   recentFolders: [],       // most-recent-first list of opened workspace folders (home page)
   workspaceChosen: false,  // true once the user has picked a folder (or dismissed the home page)
   seenImport: {},          // normFolder -> true; a folder whose import prompt was already handled
+  theme: 'graphite',       // active color theme (graphite | claude | midnight | light)
 };
 function settingsFile() { return path.join(app.getPath('userData'), 'settings.json'); }
 function loadSettings() {
@@ -262,8 +263,8 @@ function firstPrompt(sessionId, cwd) {
 
 function createWindow(state) {
   const win = new BrowserWindow({
-    width: 1280, height: 820, backgroundColor: '#1e1e1e',
-    title: `${state.title} - Claude Windows`,
+    width: 1280, height: 820, backgroundColor: '#1b1c1e',
+    title: `${state.title} - HNA-Code`,
     icon: ICON,
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false },
   });
@@ -601,7 +602,7 @@ app.whenReady().then(async () => {
     const rec = recFromEvent(e); if (!rec) return;
     rec.state.title = String(title || '').trim() || rec.state.title;
     saveWindowNow(rec);
-    if (!rec.win.isDestroyed()) rec.win.setTitle(`${rec.state.title} - Claude Windows`);
+    if (!rec.win.isDestroyed()) rec.win.setTitle(`${rec.state.title} - HNA-Code`);
   });
   ipcMain.on('window:remove', (e) => {
     const rec = recFromEvent(e); if (!rec) return;

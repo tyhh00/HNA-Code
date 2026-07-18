@@ -5,13 +5,28 @@
 const TerminalCtor = window.Terminal;
 const FitAddonCtor = window.FitAddon.FitAddon;
 
-const THEME = { background: '#000000', foreground: '#d4d4d4', cursor: '#d4d4d4', selectionBackground: '#264f78' };
+// Terminal colors follow the active theme's --term-bg (read at create/switch time).
+function cssVar(name) { return getComputedStyle(document.body).getPropertyValue(name).trim(); }
+function termTheme() {
+  return { background: cssVar('--term-bg') || '#0b0b0d', foreground: '#d6d8da', cursor: '#d6d8da', selectionBackground: '#2a3f63' };
+}
 
-const CLAUDE_MARK =
-  '<svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">' +
-  '<g stroke="#d97757" stroke-width="2.2" stroke-linecap="round">' +
-  '<line x1="12" y1="3.5" x2="12" y2="20.5"/><line x1="4.4" y1="7.75" x2="19.6" y2="16.25"/>' +
-  '<line x1="4.4" y1="16.25" x2="19.6" y2="7.75"/></g><circle cx="12" cy="12" r="2.5" fill="#e8a893"/></svg>';
+// HNA-Code mark: two linked nodes (humans + agents), themeable via --accent.
+function HNA_MARK(size = 18) {
+  const id = 'hna-grad-' + size;
+  return `<svg viewBox="0 0 32 32" width="${size}" height="${size}" aria-hidden="true">` +
+    `<defs><linearGradient id="${id}" x1="0" y1="0" x2="1" y2="1">` +
+    `<stop offset="0" stop-color="var(--accent)"/><stop offset="1" stop-color="var(--accent-hover)"/></linearGradient></defs>` +
+    `<rect x="2" y="2" width="28" height="28" rx="8" fill="url(#${id})"/>` +
+    `<circle cx="12" cy="16" r="3.3" fill="#fff"/>` +
+    `<circle cx="20" cy="16" r="3.3" fill="#fff" fill-opacity=".8"/>` +
+    `<path d="M12 16 H20" stroke="#fff" stroke-width="2.4" stroke-linecap="round"/></svg>`;
+}
+const CELL_MARK =
+  '<svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true">' +
+  '<circle cx="8" cy="12" r="2.6" fill="var(--accent)"/>' +
+  '<circle cx="16" cy="12" r="2.6" fill="var(--accent)" fill-opacity=".68"/>' +
+  '<path d="M8 12 H16" stroke="var(--accent)" stroke-width="1.8" stroke-linecap="round"/></svg>';
 
 const terms = new Map();  // sid -> { sid, term, fit, wrap, termEl, opened, name, glow, pendingGlow }
 let panes = [];           // index -> { el, tabsEl, bodyEl, perfEl, tabs:[sid], active:sid }
@@ -27,7 +42,7 @@ window.__signals = [];
 const gridEl = document.getElementById('grid');
 const statusEl = document.getElementById('status');
 
-const REPO_URL = 'https://github.com/tyhh00/claude-windows';
+const REPO_URL = 'https://github.com/tyhh00/HNA-Code';
 const LAYOUTS = [
   { key: '2x4', rows: 2, cols: 4, group: 'Landscape' },
   { key: '3x4', rows: 3, cols: 4, group: 'Landscape' },
@@ -59,7 +74,20 @@ const settings = {
   permissionSound: { enabled: false, path: null },
   sidebarCollapsed: false,
   recentFolders: [],
+  theme: 'graphite',
 };
+const THEMES = [
+  { key: 'graphite', label: 'Graphite', accent: '#4c8dff', bg: '#1b1c1e' },
+  { key: 'claude', label: 'Claude', accent: '#d97757', bg: '#201b18' },
+  { key: 'midnight', label: 'Midnight', accent: '#6d8bff', bg: '#131722' },
+  { key: 'light', label: 'Light', accent: '#2f6fed', bg: '#f2f3f5' },
+];
+function applyTheme(name) {
+  const t = THEMES.find((x) => x.key === name) ? name : 'graphite';
+  document.body.setAttribute('data-theme', t);
+  for (const rec of terms.values()) { try { rec.term.options.theme = termTheme(); } catch (_) {} }
+  document.querySelectorAll('#theme-swatches .theme-swatch').forEach((el) => el.classList.toggle('active', el.dataset.theme === t));
+}
 const persistSettings = () => window.grid.settingsChanged(settings);
 
 // ---- sounds ----------------------------------------------------------------
@@ -92,7 +120,7 @@ function createSession(sid, saved = {}) {
 
   const term = new TerminalCtor({
     fontSize: 13, fontFamily: 'Cascadia Mono, Consolas, monospace',
-    cursorBlink: true, theme: THEME, scrollback: 5000,
+    cursorBlink: true, theme: termTheme(), scrollback: 5000,
   });
   const fit = new FitAddonCtor();
   term.loadAddon(fit);
@@ -101,6 +129,8 @@ function createSession(sid, saved = {}) {
     sid, term, fit, wrap, termEl, opened: false,
     name: saved.name || defaultName(sid), glow: 'none',
     pendingGlow: saved.glow && saved.glow !== 'none' ? saved.glow : null,
+    // "real" = actually resumed a conversation or has produced a turn; only these show in the sidebar.
+    real: !!saved.sessionId,
   };
   terms.set(sid, rec);
   window.__cellTerms[sid] = term;
@@ -116,19 +146,23 @@ function createPane(i) {
   el.dataset.pane = String(i);
   el.innerHTML =
     `<div class="cell-header">` +
-      `<span class="cell-mark">${CLAUDE_MARK}</span>` +
+      `<span class="cell-mark">${CELL_MARK}</span>` +
       `<div class="tabs"></div>` +
       `<span class="cell-perf"></span>` +
-      `<button class="cell-code" title="Open folder in VS Code">&lt;/&gt;</button>` +
-    `</div><div class="pane-body"></div>`;
+      `<button class="cell-btn code" title="Open folder in VS Code">&lt;/&gt;</button>` +
+      `<button class="cell-btn close" title="Close this session">✕</button>` +
+    `</div>` +
+    `<div class="pane-body"><div class="pane-empty"><button class="pane-new">＋ New session</button></div></div>`;
   gridEl.appendChild(el);
   const pane = {
     el, tabsEl: el.querySelector('.tabs'), bodyEl: el.querySelector('.pane-body'),
-    perfEl: el.querySelector('.cell-perf'), tabs: [], active: null,
+    perfEl: el.querySelector('.cell-perf'), emptyEl: el.querySelector('.pane-empty'), tabs: [], active: null,
   };
-  el.querySelector('.cell-code').addEventListener('click', () => { if (pane.active) window.grid.openInVsCode(pane.active); });
+  el.querySelector('.cell-btn.code').addEventListener('click', () => { if (pane.active) window.grid.openInVsCode(pane.active); });
+  el.querySelector('.cell-btn.close').addEventListener('click', () => { if (pane.active) closeTab(pane, pane.active); });
+  el.querySelector('.pane-new').addEventListener('click', () => newSessionInPane(pane));
   el.querySelector('.cell-header').addEventListener('contextmenu', (e) => {
-    if (e.target.closest('.cell-code') || e.target.closest('.cell-name')) return;
+    if (e.target.closest('.cell-btn') || e.target.closest('.cell-name')) return;
     e.preventDefault();
     if (pane.active) { const span = pane.tabsEl.querySelector('.tab.active .cell-name'); if (span) startRename(span, pane.active); }
   });
@@ -183,8 +217,17 @@ function setActive(pane, sid) {
   scheduleSidebar();
 }
 
+function setPaneEmpty(pane, show) { if (pane.emptyEl) pane.emptyEl.classList.toggle('show', show); }
+function newSessionInPane(pane) {
+  const sid = String(seq++);
+  createSession(sid, {});
+  setPaneEmpty(pane, false);
+  addTab(pane, sid, { activate: true });
+}
+
 function addTab(pane, sid, { activate = false } = {}) {
   if (pane.tabs.includes(sid)) return;
+  setPaneEmpty(pane, false);
   pane.tabs.push(sid);
   const rec = terms.get(sid);
   pane.bodyEl.appendChild(rec.wrap);
@@ -210,7 +253,14 @@ function closeTab(pane, sid) {
   pane.tabs = pane.tabs.filter((s) => s !== sid);
   if (pane.active === sid) {
     if (pane.tabs.length) setActive(pane, pane.tabs[0]);
-    else { const ns = String(seq++); createSession(ns, {}); addTab(pane, ns, { activate: true }); }
+    else {
+      // Last session in this pane closed -> leave it empty (do NOT auto-spawn a new Claude here).
+      pane.active = null;
+      pane.el.removeAttribute('data-cell');
+      setPaneEmpty(pane, true);
+      renderTabs(pane);
+      updatePaneGlow(pane);
+    }
   } else { renderTabs(pane); }
   savePanes();
   scheduleSidebar();
@@ -250,7 +300,11 @@ function setGlow(sid, s, { persist = true } = {}) {
 function clearGlow(sid) { const r = terms.get(sid); if (r && r.glow !== 'none') setGlow(sid, 'none'); }
 
 // ---- wiring ----------------------------------------------------------------
-window.grid.onLaunched((sid, info) => { window.__launch[sid] = info; });
+window.grid.onLaunched((sid, info) => {
+  window.__launch[sid] = info;
+  // A resumed launch means a genuine conversation is back -> surface it in the sidebar.
+  if (info && info.resumeId) { const r = terms.get(sid); if (r) { r.real = true; scheduleSidebar(); } }
+});
 
 window.grid.onPerf((data) => {
   window.__perf = data;
@@ -269,7 +323,11 @@ window.grid.onSignal((sig) => {
   const sid = String(sig.cell);
   if (!terms.has(sid)) return;
   const trec = terms.get(sid);
-  if (trec) trec.topicFetched = false; // may have new content -> refresh topic
+  if (trec) {
+    trec.topicFetched = false; // may have new content -> refresh topic
+    // Any post-start signal (turn end / waiting / permission) means real activity happened here.
+    if (sig.kind !== 'start') trec.real = true;
+  }
   scheduleSidebar();
   if (!settings.glowEnabled) return;
   switch (sig.kind) {
@@ -314,7 +372,13 @@ function renderSidebar() {
   const listEl = document.getElementById('sb-list');
   if (!listEl) return;
   const items = [];
-  panes.forEach((p, pi) => { if (p) p.tabs.forEach((sid, ti) => items.push({ sid, pi, ti })); });
+  // Only surface sessions that are actually real (resumed, or that produced a turn). Fresh/never-used
+  // cells stay out of the list until Claude actually does something in them.
+  panes.forEach((p, pi) => { if (p) p.tabs.forEach((sid, ti) => { if (terms.get(sid)?.real) items.push({ sid, pi, ti }); }); });
+  if (!items.length) {
+    listEl.innerHTML = '<div class="sb-empty">No active sessions yet. They show up here once a Claude session is running or resumed.</div>';
+    return;
+  }
   const prio = (sid) => { const g = terms.get(sid)?.glow; return g === 'permission' ? 0 : g === 'idle' ? 1 : 2; };
   items.sort((a, b) => prio(a.sid) - prio(b.sid) || a.pi - b.pi || a.ti - b.ti); // needs-you floated to top
 
@@ -336,12 +400,17 @@ function renderSidebar() {
   });
   for (const { sid } of items) fetchTopic(sid);
 }
-function applySidebar() { document.body.classList.toggle('sb-collapsed', !!settings.sidebarCollapsed); }
+function applySidebar() {
+  const c = !!settings.sidebarCollapsed;
+  document.body.classList.toggle('sb-collapsed', c);
+  // The re-open affordance in the toolbar only appears while collapsed.
+  const t = document.getElementById('sb-toggle');
+  if (t) t.style.display = c ? 'inline-flex' : 'none';
+}
+function setSidebarCollapsed(c) { settings.sidebarCollapsed = c; applySidebar(); persistSettings(); }
 function initSidebar() {
-  document.getElementById('sb-toggle').addEventListener('click', () => {
-    settings.sidebarCollapsed = !settings.sidebarCollapsed;
-    applySidebar(); persistSettings();
-  });
+  document.getElementById('sb-collapse').addEventListener('click', () => setSidebarCollapsed(true));
+  document.getElementById('sb-toggle').addEventListener('click', () => setSidebarCollapsed(false));
   applySidebar();
   renderSidebar();
 }
@@ -367,6 +436,7 @@ function buildInitial(rows, cols) {
       const act = savedPanes[i].active;
       if (act && pane.tabs.includes(act)) setActive(pane, act);
       else if (pane.tabs.length) setActive(pane, pane.tabs[0]);
+      else setPaneEmpty(pane, true); // a pane the user emptied stays empty across restarts
     }
   } else {
     const P = rows * cols;
@@ -502,6 +572,17 @@ function initSettingsUI() {
   $('perm-pick').addEventListener('click', () => pick('permission'));
   $('done-test').addEventListener('click', () => { const a = audio.done; if (a.src) { a.currentTime = 0; a.play().catch(() => {}); } });
   $('perm-test').addEventListener('click', () => { const a = audio.permission; if (a.src) { a.currentTime = 0; a.play().catch(() => {}); } });
+
+  // Theme swatches
+  const sw = $('theme-swatches');
+  if (sw) {
+    sw.innerHTML = THEMES.map((t) =>
+      `<div class="theme-swatch" data-theme="${t.key}" title="${t.label}" style="background:${t.bg}"><span style="background:${t.accent}"></span></div>`).join('');
+    sw.querySelectorAll('.theme-swatch').forEach((el) => el.addEventListener('click', () => {
+      settings.theme = el.dataset.theme; applyTheme(settings.theme); persistSettings();
+    }));
+    sw.querySelectorAll('.theme-swatch').forEach((el) => el.classList.toggle('active', el.dataset.theme === (settings.theme || 'graphite')));
+  }
 
   $('import-open').addEventListener('click', () => { overlay.classList.remove('open'); openImportManual(); });
 
@@ -658,7 +739,7 @@ function showImport(scan, manual = false) {
   document.getElementById('import-desc').textContent = manual
     ? (n ? 'Pick sessions to bring into this window. Each resumes in its own original folder.'
          : 'No resumable sessions in this project folder.')
-    : (n ? `You have ${n} Claude session${n === 1 ? '' : 's'} in ${bn(scan.folder)} that aren't in Claude Windows yet. Pick the ones to bring in.`
+    : (n ? `You have ${n} Claude session${n === 1 ? '' : 's'} in ${bn(scan.folder)} that aren't in HNA-Code yet. Pick the ones to bring in.`
          : `Looking in ${bn(scan.folder)}.`);
   document.getElementById('imp-go').style.display = n ? '' : 'none';
   renderImportList();
@@ -768,6 +849,10 @@ function afterSettings() {
     }
   } catch (_) {}
   currentLayout = { rows, cols };
+  // Brand marks + theme must land before terminals are built (terminals read --term-bg).
+  document.getElementById('brand-mark').innerHTML = HNA_MARK(18);
+  document.getElementById('home-mark').innerHTML = HNA_MARK(30);
+  applyTheme(settings.theme);
   buildLayoutPicker();
   buildHelpMenu();
   const L = resolveLayout(`${rows}x${cols}`) || { key: `${rows}x${cols}`, rows, cols };

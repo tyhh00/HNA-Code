@@ -1,10 +1,11 @@
-# Claude Windows
+# HNA-Code
 
-A Windows desktop app that hosts many **Claude Code** sessions in a configurable grid, glows a
-cell the moment its session is done and waiting on you, and restores the whole board (sessions,
-names, glow state, folders) after a restart or crash.
+**HNA-Code (Humans and Agents Code)** is a Windows desktop app that hosts many **Claude Code**
+sessions in a configurable grid, glows a cell the moment its session is done and waiting on you,
+and restores the whole board (sessions, names, glow state, folders) after a restart or crash.
 
-Built for running 12 to 16 Claude Code sessions at once without losing your place.
+Built for running 12 to 16 coding agents at once without losing your place. Themeable, with a
+built-in importer that pulls your existing Claude Code sessions in from any folder.
 
 ## Features
 
@@ -22,7 +23,7 @@ Built for running 12 to 16 Claude Code sessions at once without losing your plac
   the session, so it follows that conversation across restarts.
 - **Project folder.** Point the app at a folder and new sessions all start there.
 - **Home page and one-click import.** On first run, a welcome page lets you open a folder to work
-  in. When that folder already has Claude sessions running outside Claude Windows, it offers to
+  in. When that folder already has Claude sessions running outside HNA-Code, it offers to
   resume them into the grid in one click (all, a selection, or only ones after a date), spilling
   into extra windows when they do not all fit.
 - **Import specific sessions any time.** Settings has a session importer that browses every folder
@@ -32,7 +33,7 @@ Built for running 12 to 16 Claude Code sessions at once without losing your plac
   between workspaces quickly.
 - **Open in VS Code.** Each cell has a button that opens its folder in VS Code.
 - **Your config stays yours.** Glow hooks are added to `~/.claude/settings.json` on startup, but
-  only Claude Windows entries are touched. Your own hooks are preserved, and you can disconnect.
+  only HNA-Code entries are touched. Your own hooks are preserved, and you can disconnect.
 
 ## Requirements
 
@@ -100,6 +101,10 @@ assertions):
 | `test/glow.mjs` | done to amber, permission to breathing blue, keystroke clears |
 | `test/persist.mjs` | autosave and resume: names, glow, sessions, cwd survive restart |
 | `test/settings.mjs` | settings persist and reflect after restart; sound pipeline; hooks connect |
+| `test/sidebar.mjs` | sessions sidebar: real-only list, needs-you first, click to jump, collapse |
+| `test/home.mjs` | first-run home page shows, lists recent folders, and the chosen flag persists |
+| `test/import.mjs` | one-click import of a folder's existing sessions into the grid |
+| `test/import-manual.mjs` | Settings importer browses another folder and resumes in its own cwd |
 
 There is also `test/e2e-real.mjs`, a live test against an authenticated `claude` (not part of
 `npm test`, since it needs auth and network).
@@ -117,8 +122,8 @@ There is also `test/e2e-real.mjs`, a live test against an authenticated `claude`
 ## Building and releasing
 
 ```bash
-npm run pack:portable   # dist/ClaudeWindows-<version>-portable.exe (single-file, no install)
-npm run pack            # portable + NSIS installer (Claude Windows Setup <version>.exe)
+npm run pack:portable   # dist/HNA-Code-<version>-portable.exe (single-file, no install)
+npm run pack            # portable + NSIS installer (HNA-Code Setup <version>.exe)
 ```
 
 Notes:
