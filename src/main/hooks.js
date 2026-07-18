@@ -40,6 +40,7 @@ function isOurs(group, scriptPath) {
 function plan(scriptPath) {
   return {
     SessionStart: [entry(scriptPath, '', 'start')],
+    UserPromptSubmit: [entry(scriptPath, '', 'prompt')], // the agent just started working -> "running"
     Notification: [
       entry(scriptPath, 'idle_prompt', 'idle'),
       entry(scriptPath, 'permission_prompt', 'permission'),

@@ -24,7 +24,8 @@ try {
   const idA = await idOf(w1);
   assert(idA === 'w1', 'first window keeps its pre-seeded id');
 
-  await w1.locator('#new-window-btn').click();
+  await w1.locator('#win-btn').click();
+  await w1.locator('#win-menu [data-new]').click();
   const w2 = await app.waitForEvent('window', { timeout: 10000 });
   await w2.waitForFunction(() => window.__ready === true, { timeout: 15000 });
   const idB = await idOf(w2);
@@ -44,9 +45,9 @@ try {
   assert((await glowOf(w1, 1)) === 'permission', 'w1 cell1 glows blue');
   assert((await glowOf(w2, 1)) === 'none', 'w2 cell1 does NOT glow (isolated)');
 
-  // Rename window 1.
-  const t = w1.locator('#win-title');
-  await t.dblclick();
+  // Rename window 1 via the window dropdown.
+  await w1.locator('#win-btn').click();
+  await w1.locator('#win-menu [data-rename]').click();
   await w1.keyboard.press('Control+A');
   await w1.keyboard.type('Left Monitor');
   await w1.keyboard.press('Enter');

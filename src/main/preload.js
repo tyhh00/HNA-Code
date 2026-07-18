@@ -1,5 +1,5 @@
 // Bridges the sandboxed renderer to main over a minimal, explicit API.
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, clipboard } = require('electron');
 
 contextBridge.exposeInMainWorld('grid', {
   // renderer -> main
@@ -56,4 +56,11 @@ contextBridge.exposeInMainWorld('grid', {
   newWindow: () => ipcRenderer.send('window:new'),
   renameWindow: (title) => ipcRenderer.send('window:rename', title),
   removeWindow: () => ipcRenderer.send('window:remove'),
+  listWindows: () => ipcRenderer.invoke('windows:list'),
+  focusWindow: (id) => ipcRenderer.send('window:focus', id),
+
+  // clipboard (Ctrl+V paste / Ctrl+C copy in the terminal — the app menu is disabled, which on
+  // Windows also strips the default paste accelerator, so we bridge the clipboard ourselves)
+  clipboardRead: () => clipboard.readText(),
+  clipboardWrite: (text) => clipboard.writeText(String(text || '')),
 });

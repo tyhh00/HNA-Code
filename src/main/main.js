@@ -77,22 +77,27 @@ let homeWcId = null;
 
 function windowsDir() { return path.join(app.getPath('userData'), 'windows'); }
 function windowStateFile(id) { return path.join(windowsDir(), `${id}.json`); }
-function defaultWindowState(id, n) {
-  return { windowId: id, title: `window-${n}`, workspace: currentWorkspace, layout: { rows: 3, cols: 4 }, cells: {}, panes: [], seq: 0 };
+function baseName(f) { return String(f || '').split(/[\\/]/).filter(Boolean).pop() || 'window'; }
+function defaultWindowState(id, n, folder) {
+  return { windowId: id, title: `${baseName(folder)}-${n}`, workspace: folder, layout: { rows: 3, cols: 4 }, cells: {}, panes: [], seq: 0 };
 }
+// The folder a window (or the invoking IPC sender) belongs to. Windows are per-folder, so this is
+// per-window — NOT a single global workspace, which lets several folders be open at once.
+function folderOf(rec) { return (rec && rec.state && rec.state.workspace) || currentWorkspace || defaultCwd(); }
 function wsHash(folder) {
   const s = normFolder(folder);
   let h = 5381;
   for (let i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
   return h.toString(36);
 }
-// Per-folder window numbering: each workspace's windows count from 1, ids namespaced by folder.
-function nextWindowInfo() {
-  const cw = normFolder(currentWorkspace);
+// Per-folder window numbering: each folder's windows count from 1, ids namespaced by folder hash.
+// N is parsed from the windowId (`...-w<N>`) so it is independent of the (renamable) title.
+function nextWindowInfo(folder) {
+  const cw = normFolder(folder);
   let max = 0;
   const scan = (st) => {
     if (!st || normFolder(st.workspace) !== cw) return;
-    const m = /window-(\d+)/.exec(st.title || '');
+    const m = /-w(\d+)$/.exec(st.windowId || '');
     if (m) max = Math.max(max, +m[1]);
   };
   for (const rec of windows.values()) scan(rec.state);
@@ -103,7 +108,7 @@ function nextWindowInfo() {
     }
   } catch (_) {}
   const n = max + 1;
-  return { n, id: `${wsHash(currentWorkspace)}-w${n}` };
+  return { n, id: `${wsHash(folder)}-w${n}` };
 }
 function scheduleWindowSave(rec) {
   clearTimeout(rec.saveTimer);
@@ -297,8 +302,10 @@ function createWindow(state) {
   return rec;
 }
 
-function openSavedWindows() {
-  const cw = normFolder(currentWorkspace);
+// Open every saved window that belongs to `folder` (or a fresh default if none). Windows already
+// open for other folders are left untouched, so multiple folders can be open simultaneously.
+function openSavedWindows(folder) {
+  const cw = normFolder(folder);
   let all = [];
   try {
     for (const f of fs.readdirSync(windowsDir())) {
@@ -307,12 +314,11 @@ function openSavedWindows() {
     }
   } catch (_) {}
 
-  // Keep only windows belonging to the current workspace. Legacy windows (no workspace field)
-  // are migrated into the current workspace the first time they open.
   const states = [];
   for (const st of all) {
     if (st.workspace === undefined || st.workspace === null) {
-      st.workspace = currentWorkspace;
+      // Legacy window (pre per-folder): adopt it into the folder being opened.
+      st.workspace = folder;
       writeJsonAtomic(windowStateFile(st.windowId), st);
       states.push(st);
     } else if (normFolder(st.workspace) === cw) {
@@ -322,8 +328,8 @@ function openSavedWindows() {
   states.sort((a, b) => String(a.windowId).localeCompare(String(b.windowId), undefined, { numeric: true }));
 
   if (states.length === 0) {
-    const { n, id } = nextWindowInfo();
-    const st = defaultWindowState(id, n);
+    const { n, id } = nextWindowInfo(folder);
+    const st = defaultWindowState(id, n, folder);
     writeJsonAtomic(windowStateFile(id), st);
     states.push(st);
   }
@@ -353,29 +359,37 @@ function createHomeWindow() {
   return win;
 }
 
-// Enter a workspace: persist the choice, open that folder's grid windows, then dismiss the launcher
-// and any windows from other workspaces. No relaunch — the grid loads in place.
+// Open a folder: persist the choice and open that folder's grid windows. Windows for OTHER folders
+// stay open (work on several projects at once). Only the launcher is dismissed. No relaunch.
 function openWorkspace(folder) {
   try { if (!folder || !fs.existsSync(folder)) return false; } catch (_) { return false; }
-  currentWorkspace = folder;
+  currentWorkspace = folder; // the "most recently opened" folder, used as the launcher default
   settings.lastWorkspace = folder;
   settings.workspaceChosen = true;
   pushRecent(folder);
   writeJsonAtomic(settingsFile(), settings);
-  const cw = normFolder(currentWorkspace);
-  openSavedWindows(); // opens this workspace's windows first, so the app never drops to zero windows
-  for (const rec of [...windows.values()]) {
-    if (rec.win && !rec.win.isDestroyed() && normFolder(rec.state.workspace) !== cw) rec.win.close();
+  const before = new Set(windows.keys());
+  openSavedWindows(folder);
+  // Focus a window we just opened for this folder.
+  for (const [id, rec] of windows) {
+    if (!before.has(id) && rec.win && !rec.win.isDestroyed()) { rec.win.focus(); break; }
   }
   if (homeWin && !homeWin.isDestroyed()) homeWin.close();
   return true;
+}
+// Create one more window for a specific folder (the window dropdown's "New window").
+function newWindowForFolder(folder) {
+  const { n, id } = nextWindowInfo(folder);
+  const st = defaultWindowState(id, n, folder);
+  writeJsonAtomic(windowStateFile(id), st);
+  return createWindow(st);
 }
 
 function spawnCell(windowId, index, opts = {}) {
   const rec = windows.get(windowId);
   if (!rec) return;
   const gid = `${windowId}#${index}`;
-  let cwd = opts.cwd || effectiveRoot();
+  let cwd = opts.cwd || folderOf(rec); // fresh cells start in this window's own folder
   try { if (!fs.existsSync(cwd)) cwd = defaultCwd(); } catch (_) { cwd = defaultCwd(); }
   const base = launchBase();
   const line = opts.resumeId && base ? `${base} --resume ${opts.resumeId}` : base;
@@ -491,7 +505,7 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('state:get', (e) => {
     const rec = recFromEvent(e);
-    const root = effectiveRoot();
+    const root = rec ? folderOf(rec) : effectiveRoot();
     // The launcher window renders the home page (no grid); every other window is a workspace grid.
     const mode = (e.sender && e.sender.id === homeWcId) ? 'home' : 'grid';
     // CW_NO_IMPORT lets tests launch without the auto-import prompt firing.
@@ -572,16 +586,16 @@ app.whenReady().then(async () => {
     writeJsonAtomic(settingsFile(), settings);
     return folder;
   });
-  ipcMain.handle('root:get', () => effectiveRoot());
+  ipcMain.handle('root:get', (e) => folderOf(recFromEvent(e)));
   ipcMain.on('workspace:chosen', () => { settings.workspaceChosen = true; saveSettings(); });
-  // Enter a folder from the launcher (or switch workspace from a grid window): loads the grid in
-  // place, no relaunch. Returns true if the folder opened.
+  // Enter a folder from the launcher (or open another folder from a grid window): loads the grid in
+  // place, no relaunch, without closing other folders. Returns true if the folder opened.
   ipcMain.handle('workspace:open', (_e, folder) => openWorkspace(folder));
   ipcMain.on('window:home', () => createHomeWindow()); // open the launcher to switch/open a workspace
 
   // ---- one-click import of a folder's existing Claude sessions (#24) --------
-  ipcMain.handle('workspace:scan', () => {
-    const folder = effectiveRoot();
+  ipcMain.handle('workspace:scan', (e) => {
+    const folder = folderOf(recFromEvent(e));
     const exclude = new Set();
     for (const rec of windows.values()) {
       if (normFolder(rec.state.workspace) !== normFolder(folder)) continue;
@@ -589,9 +603,9 @@ app.whenReady().then(async () => {
     }
     return { folder, sessions: scanWorkspaceSessions(folder, exclude) };
   });
-  ipcMain.on('workspace:importSeen', () => {
+  ipcMain.on('workspace:importSeen', (e) => {
     settings.seenImport = settings.seenImport || {};
-    settings.seenImport[normFolder(effectiveRoot())] = true;
+    settings.seenImport[normFolder(folderOf(recFromEvent(e)))] = true;
     saveSettings();
   });
   // Settings importer: browse every Claude project and pull specific sessions in (each resumes in
@@ -603,17 +617,18 @@ app.whenReady().then(async () => {
     const rec = recFromEvent(e); if (!rec) return false;
     const gid = `${rec.state.windowId}#${index}`;
     const p = sessions.get(gid); if (p) { try { p.kill(); } catch (_) {} sessions.delete(gid); }
-    const c = cellRec(rec, index); c.sessionId = sessionId; c.cwd = cwd || effectiveRoot();
+    const c = cellRec(rec, index); c.sessionId = sessionId; c.cwd = cwd || folderOf(rec);
     scheduleWindowSave(rec);
     spawnCell(rec.state.windowId, index, { cwd: c.cwd, resumeId: sessionId, cols, rows });
     return true;
   });
   // Overflow import: create a new window whose cells are pre-seeded to resume `sessionList`.
-  ipcMain.handle('window:newWithSessions', (_e, sessionList) => {
+  ipcMain.handle('window:newWithSessions', (e, sessionList) => {
     if (!Array.isArray(sessionList) || !sessionList.length) return null;
-    const { n, id } = nextWindowInfo();
+    const folder = folderOf(recFromEvent(e));
+    const { n, id } = nextWindowInfo(folder);
     const L = pickFitLayout(sessionList.length);
-    const st = defaultWindowState(id, n);
+    const st = defaultWindowState(id, n, folder);
     st.layout = { rows: L.rows, cols: L.cols };
     const total = Math.max(L.rows * L.cols, sessionList.length);
     st.panes = [];
@@ -621,7 +636,7 @@ app.whenReady().then(async () => {
       const sid = String(i);
       if (i < sessionList.length) {
         const s = sessionList[i];
-        st.cells[sid] = { sessionId: s.sessionId, cwd: s.cwd || effectiveRoot() };
+        st.cells[sid] = { sessionId: s.sessionId, cwd: s.cwd || folder };
         if (s.title) st.cells[sid].name = s.title;
       }
       st.panes.push({ tabs: [sid], active: sid });
@@ -635,17 +650,25 @@ app.whenReady().then(async () => {
   ipcMain.on('open:external', (_e, url) => { if (/^https?:\/\//.test(url)) shell.openExternal(url); });
   ipcMain.on('cell:openInVsCode', (e, index) => {
     const rec = recFromEvent(e); if (!rec) return;
-    const dir = (rec.state.cells[index] && rec.state.cells[index].cwd) || effectiveRoot();
+    const dir = (rec.state.cells[index] && rec.state.cells[index].cwd) || folderOf(rec);
     try { require('child_process').spawn('code', [dir], { shell: true, detached: true, stdio: 'ignore' }).unref(); } catch (_) {}
   });
 
-  // windows
-  ipcMain.on('window:new', () => {
-    const { n, id } = nextWindowInfo();
-    const st = defaultWindowState(id, n);
-    writeJsonAtomic(windowStateFile(id), st);
-    createWindow(st);
+  // windows — a new window belongs to the SAME folder as the one it was opened from.
+  ipcMain.on('window:new', (e) => { newWindowForFolder(folderOf(recFromEvent(e))); });
+  ipcMain.handle('windows:list', (e) => {
+    const rec = recFromEvent(e);
+    const folder = folderOf(rec);
+    const cw = normFolder(folder);
+    const out = [];
+    for (const r of windows.values()) {
+      if (normFolder(r.state.workspace) !== cw) continue;
+      out.push({ windowId: r.state.windowId, title: r.state.title, current: r === rec });
+    }
+    out.sort((a, b) => String(a.windowId).localeCompare(String(b.windowId), undefined, { numeric: true }));
+    return { folder, windows: out };
   });
+  ipcMain.on('window:focus', (_e, id) => { const r = windows.get(id); if (r && r.win && !r.win.isDestroyed()) { if (r.win.isMinimized()) r.win.restore(); r.win.focus(); } });
   ipcMain.on('window:rename', (e, title) => {
     const rec = recFromEvent(e); if (!rec) return;
     rec.state.title = String(title || '').trim() || rec.state.title;
@@ -662,12 +685,10 @@ app.whenReady().then(async () => {
   // Open to the launcher (home page) by default. A forced folder (env) or a test that opts out of
   // the home flow jumps straight into the workspace grid.
   const bootStraightToGrid = !!process.env.CW_ROOT_FOLDER || !!process.env.CW_SKIP_HOME;
-  if (bootStraightToGrid) openSavedWindows();
+  if (bootStraightToGrid) openSavedWindows(currentWorkspace);
   else createHomeWindow();
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      if (windows.size === 0) createHomeWindow(); else openSavedWindows();
-    }
+    if (BrowserWindow.getAllWindows().length === 0) createHomeWindow();
   });
 });
 

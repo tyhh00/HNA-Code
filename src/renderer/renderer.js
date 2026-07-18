@@ -136,7 +136,17 @@ function createSession(sid, saved = {}) {
   window.__cellTerms[sid] = term;
 
   term.onData((d) => window.grid.sendInput(sid, d));   // forward all bytes (incl. auto-replies)
-  term.onKey(() => clearGlow(sid));                    // real keypress -> you've engaged
+  term.onKey(() => { clearGlow(sid); markReal(sid); }); // real keypress -> engaged + a real session
+  // Ctrl+V pastes the clipboard; Ctrl+C copies the selection (falling through to SIGINT otherwise).
+  term.attachCustomKeyEventHandler((e) => {
+    if (e.type !== 'keydown' || !(e.ctrlKey || e.metaKey) || e.altKey) return true;
+    const k = (e.key || '').toLowerCase();
+    if (k === 'v' && !e.shiftKey) { const t = window.grid.clipboardRead(); if (t) term.paste(t); return false; }
+    if (k === 'c' && term.hasSelection()) { window.grid.clipboardWrite(term.getSelection()); return false; }
+    return true;
+  });
+  // Clicking into a glowing cell is an implicit acknowledgement -> fade the glow away.
+  wrap.addEventListener('mousedown', () => clearGlow(sid));
   return rec;
 }
 
@@ -178,7 +188,10 @@ function renderTabs(pane) {
     if (!rec) continue;
     const tab = document.createElement('div');
     tab.className = 'tab' + (sid === pane.active ? ' active' : '');
-    if (sid !== pane.active && rec.glow !== 'none') tab.classList.add('tab-' + rec.glow);
+    if (sid !== pane.active) {
+      if (rec.glow !== 'none') tab.classList.add('tab-' + rec.glow);
+      else if (rec.running) tab.classList.add('tab-running');
+    }
     const nameSpan = document.createElement('span');
     nameSpan.className = 'cell-name';
     nameSpan.title = 'Click to switch · double-click to rename';
@@ -298,6 +311,15 @@ function setGlow(sid, s, { persist = true } = {}) {
   if (persist) window.grid.glowChanged(sid, s);
 }
 function clearGlow(sid) { const r = terms.get(sid); if (r && r.glow !== 'none') setGlow(sid, 'none'); }
+// Mark a session "real" (resumed, or the user/agent has engaged) so it surfaces in the sidebar.
+function markReal(sid) { const r = terms.get(sid); if (r && !r.real) { r.real = true; scheduleSidebar(); } }
+function setRunning(sid, on) {
+  const r = terms.get(sid); if (!r) return;
+  if (r.running === on) return;
+  r.running = on;
+  const pane = paneOf(sid); if (pane) renderTabs(pane);
+  scheduleSidebar();
+}
 
 // ---- wiring ----------------------------------------------------------------
 window.grid.onLaunched((sid, info) => {
@@ -329,13 +351,19 @@ window.grid.onSignal((sig) => {
     if (sig.kind !== 'start') trec.real = true;
   }
   scheduleSidebar();
-  if (!settings.glowEnabled) return;
   switch (sig.kind) {
     case 'stop':
     case 'idle':
-      if (settings.glowOn !== 'permission-only') { setGlow(sid, 'idle'); playSound('done'); }
+      setRunning(sid, false);
+      if (settings.glowEnabled && settings.glowOn !== 'permission-only') { setGlow(sid, 'idle'); playSound('done'); }
       break;
-    case 'permission': setGlow(sid, 'permission'); playSound('permission'); break;
+    case 'permission':
+      setRunning(sid, false);
+      if (settings.glowEnabled) { setGlow(sid, 'permission'); playSound('permission'); }
+      break;
+    case 'prompt': // user submitted a prompt -> the agent is now working
+      markReal(sid); clearGlow(sid); setRunning(sid, true);
+      break;
     case 'start': clearGlow(sid); break;
   }
 });
@@ -396,13 +424,14 @@ function renderSidebar() {
   for (const { sid } of items) {
     const rec = terms.get(sid); if (!rec) continue;
     const needs = rec.glow !== 'none';
-    const section = needs ? 'Needs you' : (hasNeeds ? 'Running' : null);
+    const section = needs ? 'Needs you' : (hasNeeds ? 'Active' : null);
     if (section && section !== lastSection) { html += `<div class="sb-section">${section}</div>`; lastSection = section; }
     const active = paneOf(sid)?.active === sid;
+    const dot = rec.glow !== 'none' ? rec.glow : (rec.running ? 'running' : 'none');
     // Subtitle = a preview of the conversation, but only when it adds something over the title.
     const showTopic = rec.topic && !sameStart(rec.name, rec.topic);
     html += `<div class="sb-item${active ? ' active' : ''}" data-sid="${sid}">` +
-      `<span class="sb-dot ${rec.glow}"></span>` +
+      `<span class="sb-dot ${dot}"></span>` +
       `<span class="sb-body"><span class="sb-name">${escapeHtml(rec.name)}</span>` +
       (showTopic ? `<span class="sb-topic">${escapeHtml(rec.topic)}</span>` : '') + '</span></div>';
   }
@@ -653,23 +682,64 @@ async function initFolderUI() {
   document.addEventListener('click', () => menu.classList.remove('open'));
 }
 
+function startWindowRename() {
+  const titleEl = document.getElementById('win-title');
+  titleEl.setAttribute('contenteditable', 'true');
+  titleEl.focus();
+  const r = document.createRange(); r.selectNodeContents(titleEl);
+  const s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+}
 async function initWindowUI() {
   const info = await window.grid.windowInfo();
   const titleEl = document.getElementById('win-title');
   if (info) { window.__windowId = info.windowId; window.__windowTitle = info.title; titleEl.textContent = info.title; }
-  titleEl.addEventListener('dblclick', () => {
-    titleEl.setAttribute('contenteditable', 'true');
-    titleEl.focus();
-    const r = document.createRange(); r.selectNodeContents(titleEl);
-    const s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
-  });
   titleEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); titleEl.blur(); } e.stopPropagation(); });
   titleEl.addEventListener('blur', () => {
     titleEl.setAttribute('contenteditable', 'false');
     const t = (titleEl.textContent || '').replace(/\s+/g, ' ').trim() || (window.__windowTitle || 'window');
     titleEl.textContent = t; window.__windowTitle = t; window.grid.renameWindow(t);
   });
-  document.getElementById('new-window-btn').addEventListener('click', () => window.grid.newWindow());
+
+  const btn = document.getElementById('win-btn');
+  const menu = document.getElementById('win-menu');
+  async function build() {
+    const { folder, windows: wins } = await window.grid.listWindows();
+    let html = `<div class="group-label">Windows · ${escapeHtml(bn(folder))}</div>`;
+    html += wins.map((w) =>
+      `<div class="menu-item${w.current ? ' wm-current' : ''}" data-focus="${escapeHtml(w.windowId)}">${escapeHtml(w.title)}${w.current ? ' (this)' : ''}</div>`).join('');
+    html += `<div class="menu-item open-row" data-new="1">＋ New window for ${escapeHtml(bn(folder))}</div>`;
+    html += `<div class="menu-item" data-rename="1">✎ Rename this window</div>`;
+    html += `<div class="menu-item" data-openfolder="1">📂 Open another folder…</div>`;
+    menu.innerHTML = html;
+    menu.querySelectorAll('[data-focus]').forEach((el) => el.addEventListener('click', () => {
+      menu.classList.remove('open');
+      if (el.dataset.focus !== window.__windowId) window.grid.focusWindow(el.dataset.focus);
+    }));
+    menu.querySelector('[data-new]').addEventListener('click', () => { menu.classList.remove('open'); window.grid.newWindow(); });
+    menu.querySelector('[data-rename]').addEventListener('click', () => { menu.classList.remove('open'); startWindowRename(); });
+    menu.querySelector('[data-openfolder]').addEventListener('click', () => { menu.classList.remove('open'); window.grid.openHomeWindow(); });
+  }
+  btn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    if (!menu.classList.contains('open')) await build();
+    menu.classList.toggle('open');
+  });
+  document.addEventListener('click', () => menu.classList.remove('open'));
+}
+// Tools menu: Broadcast + Home, with names.
+function initTools() {
+  const btn = document.getElementById('tools-btn');
+  const menu = document.getElementById('tools-menu');
+  menu.innerHTML =
+    `<div class="menu-item" data-act="broadcast">📢 Broadcast to all cells <span style="color:var(--text-3);margin-left:6px">Ctrl+Shift+B</span></div>` +
+    `<div class="menu-item" data-act="home">🏠 Home / open a folder</div>`;
+  menu.querySelectorAll('.menu-item').forEach((el) => el.addEventListener('click', () => {
+    menu.classList.remove('open');
+    if (el.dataset.act === 'broadcast') toggleBroadcast();
+    if (el.dataset.act === 'home') window.grid.openHomeWindow();
+  }));
+  btn.addEventListener('click', (e) => { e.stopPropagation(); menu.classList.toggle('open'); });
+  document.addEventListener('click', () => menu.classList.remove('open'));
 }
 
 // ---- Home page + one-click import of existing sessions (#24) ----------------
@@ -843,7 +913,6 @@ function toggleBroadcast(force) {
 function initBroadcast() {
   const inp = document.getElementById('bc-input');
   const send = () => { broadcast(inp.value + '\r'); inp.value = ''; inp.focus(); };
-  document.getElementById('broadcast-btn').addEventListener('click', () => toggleBroadcast());
   document.getElementById('bc-close').addEventListener('click', () => toggleBroadcast(false));
   document.getElementById('bc-send').addEventListener('click', send);
   document.getElementById('bc-enter').addEventListener('click', () => { broadcast('\r'); inp.focus(); });
@@ -863,8 +932,7 @@ function afterSettings() {
   initSidebar();
   initImport();
   initBroadcast();
-  // In a grid window the home button opens the launcher (to switch/open another workspace).
-  document.getElementById('home-btn').addEventListener('click', () => window.grid.openHomeWindow());
+  initTools();
   applyPerfClass();
 }
 
