@@ -147,8 +147,22 @@
     #perf-total { display: none; font-size: 12px; color: var(--ok); font-family: var(--font-mono); }
     body.perf-on #perf-total { display: inline; }
 
+    /* ===== Broadcast bar ================================================= */
+    #broadcast-bar {
+      display: none; align-items: center; gap: 10px; height: 46px; padding: 0 14px;
+      background: var(--accent-soft); border-bottom: 1px solid var(--border-subtle);
+    }
+    body.bc-on #broadcast-bar { display: flex; }
+    #broadcast-bar .bc-label { font-size: 12.5px; font-weight: 600; color: var(--text); white-space: nowrap; }
+    #bc-input {
+      flex: 1 1 auto; min-width: 0; background: var(--inset); color: var(--text);
+      border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 7px 10px; font-size: 13px; outline: none;
+    }
+    #bc-input:focus { border-color: var(--accent); }
+
     /* ===== Layout: sidebar + grid ======================================= */
     #main-row { display: flex; height: calc(100vh - 44px); min-height: 0; }
+    body.bc-on #main-row { height: calc(100vh - 90px); }
     #sidebar {
       flex: 0 0 250px; width: 250px; background: var(--sidebar-bg); border-right: 1px solid var(--border-subtle);
       display: flex; flex-direction: column; min-height: 0;
@@ -176,10 +190,9 @@
     .sb-dot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; margin-top: 5px; background: var(--border-strong); }
     .sb-dot.idle { background: var(--idle); box-shadow: 0 0 7px var(--idle); }
     .sb-dot.permission { background: var(--permission); box-shadow: 0 0 8px var(--permission); animation: breathe 1.6s ease-in-out infinite; }
-    .sb-body { min-width: 0; flex: 1 1 auto; }
-    .sb-name { font-size: 13px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .sb-item.active .sb-name { color: var(--text); font-weight: 550; }
-    .sb-topic { font-size: 11.5px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
+    .sb-body { min-width: 0; flex: 1 1 auto; display: flex; flex-direction: column; gap: 2px; }
+    .sb-name { font-size: 13px; font-weight: 550; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .sb-topic { font-size: 11px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .sb-empty { padding: 16px 14px; font-size: 12px; color: var(--text-3); line-height: 1.5; }
 
     #grid {
@@ -357,6 +370,7 @@
     </div>
     <!-- kept for compatibility; sidebar collapse now lives in the sessions header -->
     <button id="sb-toggle" class="icon-btn" title="Show sessions" style="display:none">☰</button>
+    <button id="broadcast-btn" class="icon-btn" title="Broadcast: type once, send to every cell (Ctrl+Shift+B)">📢</button>
     <span class="status" id="status"></span>
     <span id="perf-total" title="This window: total CPU / RAM of its sessions"></span>
     <div id="help-picker" class="picker">
@@ -366,6 +380,13 @@
     <button id="settings-btn" title="Settings">⚙</button>
   </div>
 
+  <div id="broadcast-bar">
+    <span class="bc-label">📢 Broadcast to all cells</span>
+    <input id="bc-input" placeholder="Type a message to send to every cell, then press Enter…" />
+    <button id="bc-enter" class="btn" title="Send just Enter to every cell (answers prompts like 'trust this folder?')">⏎ Enter all</button>
+    <button id="bc-send" class="btn accent">Send to all</button>
+    <button id="bc-close" class="icon-btn" title="Close broadcast">✕</button>
+  </div>
   <div id="main-row">
     <aside id="sidebar">
       <div id="sb-head">

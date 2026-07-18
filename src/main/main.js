@@ -387,7 +387,12 @@ function spawnCell(windowId, index, opts = {}) {
     env: { ...process.env, CC_CELL_ID: gid, CC_SIGNAL_PORT: String(signal.port), CC_SIGNAL_TOKEN: signal.token },
   });
   proc.onData((d) => sendTo(windows.get(windowId), 'pty:data', index, d));
-  proc.onExit(() => { sessions.delete(gid); sendTo(windows.get(windowId), 'pty:exit', index); });
+  proc.onExit(() => {
+    // Only react if this pty is still the cell's current one. During an import we kill the old pty
+    // right after spawning its replacement; the old pty's late onExit must NOT evict the new session
+    // (that left resumed cells unresponsive) or print a spurious "[process exited]".
+    if (sessions.get(gid) === proc) { sessions.delete(gid); sendTo(windows.get(windowId), 'pty:exit', index); }
+  });
   sessions.set(gid, proc);
   sendTo(rec, 'cell:launched', index, { line, cwd, resumeId: opts.resumeId || null });
   return proc;

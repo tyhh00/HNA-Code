@@ -62,6 +62,21 @@ try {
   assert(anyLine && /--resume IMP-/.test(anyLine.line), 'resumed cell launch line includes --resume');
 
   assert(!(await win.locator('#import-overlay').evaluate((el) => el.classList.contains('open'))), 'overlay closes after import');
+
+  // Regression: killing the fresh pty to spawn the resumed one must NOT evict the new session from
+  // the map (that left resumed cells dead with a spurious "[process exited]").
+  await sleep(600);
+  const exited = await win.evaluate(() => {
+    const bad = [];
+    for (const sid of ['0', '1', '2']) {
+      const t = window.__cellTerms[sid]; if (!t) continue;
+      const b = t.buffer.active; let s = '';
+      for (let i = 0; i < b.length; i++) { const l = b.getLine(i); if (l) s += l.translateToString(true) + '\n'; }
+      if (s.includes('[process exited]')) bad.push(sid);
+    }
+    return bad;
+  });
+  assert(exited.length === 0, `resumed cells stay live (no spurious exit; bad: ${exited.join(',') || 'none'})`);
   await win.screenshot({ path: shot('shot-24-imported.png') });
 
   console.log(fail ? 'RESULT: FAIL' : 'RESULT: PASS');

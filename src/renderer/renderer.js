@@ -360,6 +360,14 @@ function savePanes() {
 function escapeHtml(s) {
   return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 }
+// True when name and topic are effectively the same text (so we don't show a duplicate subtitle).
+function sameStart(a, b) {
+  if (!a || !b) return false;
+  const x = a.trim().toLowerCase(), y = b.trim().toLowerCase();
+  if (x === y) return true;
+  const n = Math.min(18, x.length, y.length);
+  return n >= 8 && (x.startsWith(y.slice(0, n)) || y.startsWith(x.slice(0, n)));
+}
 let sbTimer = null;
 function scheduleSidebar() { clearTimeout(sbTimer); sbTimer = setTimeout(renderSidebar, 80); }
 function fetchTopic(sid) {
@@ -382,19 +390,23 @@ function renderSidebar() {
   const prio = (sid) => { const g = terms.get(sid)?.glow; return g === 'permission' ? 0 : g === 'idle' ? 1 : 2; };
   items.sort((a, b) => prio(a.sid) - prio(b.sid) || a.pi - b.pi || a.ti - b.ti); // needs-you floated to top
 
+  // The panel header already says "Sessions", so only label the needs-you split (and the rest once).
+  const hasNeeds = items.some((it) => terms.get(it.sid)?.glow !== 'none');
   let html = '', lastSection = null;
   for (const { sid } of items) {
     const rec = terms.get(sid); if (!rec) continue;
-    const section = rec.glow === 'none' ? 'Sessions' : 'Needs you';
-    if (section !== lastSection) { html += `<div class="sb-section">${section}</div>`; lastSection = section; }
+    const needs = rec.glow !== 'none';
+    const section = needs ? 'Needs you' : (hasNeeds ? 'Running' : null);
+    if (section && section !== lastSection) { html += `<div class="sb-section">${section}</div>`; lastSection = section; }
     const active = paneOf(sid)?.active === sid;
-    const topic = rec.topic ? escapeHtml(rec.topic) : '';
+    // Subtitle = a preview of the conversation, but only when it adds something over the title.
+    const showTopic = rec.topic && !sameStart(rec.name, rec.topic);
     html += `<div class="sb-item${active ? ' active' : ''}" data-sid="${sid}">` +
       `<span class="sb-dot ${rec.glow}"></span>` +
       `<span class="sb-body"><span class="sb-name">${escapeHtml(rec.name)}</span>` +
-      (topic ? `<span class="sb-topic">${topic}</span>` : '') + '</span></div>';
+      (showTopic ? `<span class="sb-topic">${escapeHtml(rec.topic)}</span>` : '') + '</span></div>';
   }
-  listEl.innerHTML = html || '<div class="sb-section">No sessions</div>';
+  listEl.innerHTML = html;
   listEl.querySelectorAll('.sb-item').forEach((el) => {
     el.addEventListener('click', () => { const p = paneOf(el.dataset.sid); if (p) setActive(p, el.dataset.sid); });
   });
@@ -816,6 +828,31 @@ function initImport() {
 }
 let importSeenAtBoot = false;
 
+// ---- Broadcast: type once, send to every cell ------------------------------
+// Two birds: answer a prompt (e.g. Claude's "trust this folder?") across all cells at once, and
+// kick off the same starting prompt in every agent.
+function broadcast(data) {
+  for (const p of panes) { if (p && p.active) window.grid.sendInput(p.active, data); }
+}
+function toggleBroadcast(force) {
+  const on = force === undefined ? !document.body.classList.contains('bc-on') : force;
+  document.body.classList.toggle('bc-on', on);
+  requestAnimationFrame(refitAll); // grid height changed
+  if (on) document.getElementById('bc-input').focus();
+}
+function initBroadcast() {
+  const inp = document.getElementById('bc-input');
+  const send = () => { broadcast(inp.value + '\r'); inp.value = ''; inp.focus(); };
+  document.getElementById('broadcast-btn').addEventListener('click', () => toggleBroadcast());
+  document.getElementById('bc-close').addEventListener('click', () => toggleBroadcast(false));
+  document.getElementById('bc-send').addEventListener('click', send);
+  document.getElementById('bc-enter').addEventListener('click', () => { broadcast('\r'); inp.focus(); });
+  inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); send(); } e.stopPropagation(); });
+  window.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'B' || e.key === 'b')) { e.preventDefault(); toggleBroadcast(); }
+  }, true);
+}
+
 function afterSettings() {
   window.__settings = settings;
   loadSoundInto('done', settings.doneSound && settings.doneSound.path);
@@ -825,6 +862,7 @@ function afterSettings() {
   initWindowUI();
   initSidebar();
   initImport();
+  initBroadcast();
   // In a grid window the home button opens the launcher (to switch/open another workspace).
   document.getElementById('home-btn').addEventListener('click', () => window.grid.openHomeWindow());
   applyPerfClass();
