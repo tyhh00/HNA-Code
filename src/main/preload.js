@@ -38,6 +38,8 @@ contextBridge.exposeInMainWorld('grid', {
   getRoot: () => ipcRenderer.invoke('root:get'),
   relaunchApp: () => ipcRenderer.send('app:relaunch'),
   markWorkspaceChosen: () => ipcRenderer.send('workspace:chosen'),
+  openWorkspace: (folder) => ipcRenderer.invoke('workspace:open', folder),
+  openHomeWindow: () => ipcRenderer.send('window:home'),
 
   // home page + one-click import of existing sessions
   scanWorkspace: () => ipcRenderer.invoke('workspace:scan'),

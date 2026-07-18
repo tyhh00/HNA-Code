@@ -72,6 +72,8 @@ const windows = new Map();  // windowId -> { win, state, saveTimer, removed }
 const wcToWin = new Map();  // webContents.id -> windowId
 const sessions = new Map(); // `${windowId}#${index}` -> pty
 let signal = { port: 0, token: '' };
+let homeWin = null;         // the launcher/home window (no grid); null once a workspace is opened
+let homeWcId = null;
 
 function windowsDir() { return path.join(app.getPath('userData'), 'windows'); }
 function windowStateFile(id) { return path.join(windowsDir(), `${id}.json`); }
@@ -328,6 +330,47 @@ function openSavedWindows() {
   for (const st of states) if (!windows.has(st.windowId)) createWindow(st);
 }
 
+// The launcher window: the app opens here (a folder chooser) with NO grid and NO sessions spawned.
+// Picking a folder is what actually loads a workspace's grid windows (see openWorkspace).
+function createHomeWindow() {
+  if (homeWin && !homeWin.isDestroyed()) { homeWin.focus(); return homeWin; }
+  const win = new BrowserWindow({
+    width: 860, height: 620, backgroundColor: '#1b1c1e', title: 'HNA-Code',
+    icon: ICON,
+    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false },
+  });
+  homeWin = win; homeWcId = win.webContents.id;
+  win.webContents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown' || !(input.control || input.meta)) return;
+    const wc = win.webContents;
+    const set = (lvl) => wc.setZoomLevel(Math.max(-3, Math.min(4, lvl)));
+    if (input.key === '=' || input.key === '+') { set(wc.getZoomLevel() + 0.5); event.preventDefault(); }
+    else if (input.key === '-' || input.key === '_') { set(wc.getZoomLevel() - 0.5); event.preventDefault(); }
+    else if (input.key === '0') { set(0); event.preventDefault(); }
+  });
+  win.on('closed', () => { if (homeWin === win) { homeWin = null; homeWcId = null; } });
+  win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
+  return win;
+}
+
+// Enter a workspace: persist the choice, open that folder's grid windows, then dismiss the launcher
+// and any windows from other workspaces. No relaunch — the grid loads in place.
+function openWorkspace(folder) {
+  try { if (!folder || !fs.existsSync(folder)) return false; } catch (_) { return false; }
+  currentWorkspace = folder;
+  settings.lastWorkspace = folder;
+  settings.workspaceChosen = true;
+  pushRecent(folder);
+  writeJsonAtomic(settingsFile(), settings);
+  const cw = normFolder(currentWorkspace);
+  openSavedWindows(); // opens this workspace's windows first, so the app never drops to zero windows
+  for (const rec of [...windows.values()]) {
+    if (rec.win && !rec.win.isDestroyed() && normFolder(rec.state.workspace) !== cw) rec.win.close();
+  }
+  if (homeWin && !homeWin.isDestroyed()) homeWin.close();
+  return true;
+}
+
 function spawnCell(windowId, index, opts = {}) {
   const rec = windows.get(windowId);
   if (!rec) return;
@@ -436,10 +479,7 @@ function applyPerfSetting() {
 app.whenReady().then(async () => {
   Menu.setApplicationMenu(null); // we handle zoom ourselves; avoids accidental Ctrl+R reload
   loadSettings();
-  currentWorkspace = resolveWorkspace();
-  settings.lastWorkspace = currentWorkspace; // remember this folder for the next plain launch
-  pushRecent(currentWorkspace);
-  writeJsonAtomic(settingsFile(), settings);
+  currentWorkspace = resolveWorkspace(); // a sensible default; the grid only opens once a folder is chosen
   if (settings.autoHooks !== false) { try { hooks.installHooks(HOOK_SCRIPT); } catch (_) {} }
   await initSignal();
   applyPerfSetting();
@@ -447,12 +487,11 @@ app.whenReady().then(async () => {
   ipcMain.handle('state:get', (e) => {
     const rec = recFromEvent(e);
     const root = effectiveRoot();
-    // Home page shows only on a genuine first run (no folder chosen yet, none forced via env).
-    // CW_SKIP_HOME lets tests launch straight into the grid.
-    const firstRun = !settings.workspaceChosen && !process.env.CW_ROOT_FOLDER && !process.env.CW_SKIP_HOME;
+    // The launcher window renders the home page (no grid); every other window is a workspace grid.
+    const mode = (e.sender && e.sender.id === homeWcId) ? 'home' : 'grid';
     // CW_NO_IMPORT lets tests launch without the auto-import prompt firing.
     const importSeen = !!process.env.CW_NO_IMPORT || !!(settings.seenImport && settings.seenImport[normFolder(root)]);
-    const extra = { settings, root, firstRun, importSeen };
+    const extra = { settings, root, mode, importSeen };
     return rec ? { ...rec.state, ...extra } : extra;
   });
   ipcMain.handle('window:info', (e) => { const rec = recFromEvent(e); return rec ? { windowId: rec.state.windowId, title: rec.state.title } : null; });
@@ -530,6 +569,10 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle('root:get', () => effectiveRoot());
   ipcMain.on('workspace:chosen', () => { settings.workspaceChosen = true; saveSettings(); });
+  // Enter a folder from the launcher (or switch workspace from a grid window): loads the grid in
+  // place, no relaunch. Returns true if the folder opened.
+  ipcMain.handle('workspace:open', (_e, folder) => openWorkspace(folder));
+  ipcMain.on('window:home', () => createHomeWindow()); // open the launcher to switch/open a workspace
 
   // ---- one-click import of a folder's existing Claude sessions (#24) --------
   ipcMain.handle('workspace:scan', () => {
@@ -611,8 +654,16 @@ app.whenReady().then(async () => {
     rec.win.close();
   });
 
-  openSavedWindows();
-  app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) openSavedWindows(); });
+  // Open to the launcher (home page) by default. A forced folder (env) or a test that opts out of
+  // the home flow jumps straight into the workspace grid.
+  const bootStraightToGrid = !!process.env.CW_ROOT_FOLDER || !!process.env.CW_SKIP_HOME;
+  if (bootStraightToGrid) openSavedWindows();
+  else createHomeWindow();
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      if (windows.size === 0) createHomeWindow(); else openSavedWindows();
+    }
+  });
 });
 
 app.on('window-all-closed', () => {

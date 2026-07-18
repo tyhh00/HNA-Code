@@ -622,16 +622,15 @@ async function initFolderUI() {
     }
     html += '<div class="menu-item open-row" data-open="1">📂 Open folder…</div>';
     menu.innerHTML = html;
-    menu.querySelectorAll('.menu-item[data-folder]').forEach((el) => el.addEventListener('click', async () => {
+    menu.querySelectorAll('.menu-item[data-folder]').forEach((el) => el.addEventListener('click', () => {
       menu.classList.remove('open');
       if (el.dataset.folder.toLowerCase() === curNorm) return; // already here
-      const ok = await window.grid.setRoot(el.dataset.folder);
-      if (ok) window.grid.relaunchApp();
+      window.grid.openWorkspace(el.dataset.folder); // switch workspace in place
     }));
     menu.querySelector('[data-open]').addEventListener('click', async () => {
       menu.classList.remove('open');
       const dir = await window.grid.pickRoot();
-      if (dir) window.grid.relaunchApp();
+      if (dir) window.grid.openWorkspace(dir);
     });
   }
   btn.addEventListener('click', (e) => {
@@ -678,24 +677,17 @@ function renderRecents() {
     `<div class="recent-item" data-folder="${escapeHtml(f)}">` +
     `<span class="recent-name">${escapeHtml(bn(f))}</span>` +
     `<span class="recent-path">${escapeHtml(f)}</span></div>`).join('');
-  el.querySelectorAll('.recent-item').forEach((row) => row.addEventListener('click', async () => {
-    const folder = row.dataset.folder;
-    const ok = await window.grid.setRoot(folder);
-    if (ok) window.grid.relaunchApp();
-  }));
+  el.querySelectorAll('.recent-item').forEach((row) => row.addEventListener('click', () => window.grid.openWorkspace(row.dataset.folder)));
 }
+// The launcher home page: opening a folder loads that workspace's grid in place (no relaunch).
 function initHome() {
   renderRecents();
-  document.getElementById('home-btn').addEventListener('click', () => { renderRecents(); showHome(); });
+  const root = savedState && savedState.root;
   document.getElementById('home-open').addEventListener('click', async () => {
     const dir = await window.grid.pickRoot();
-    if (dir) window.grid.relaunchApp();
+    if (dir) window.grid.openWorkspace(dir);
   });
-  document.getElementById('home-skip').addEventListener('click', () => {
-    window.grid.markWorkspaceChosen();
-    hideHome();
-    maybeShowImport(); // still offer to import whatever's already in this folder
-  });
+  document.getElementById('home-skip').addEventListener('click', () => { if (root) window.grid.openWorkspace(root); });
 }
 
 let importScan = null; // { folder, sessions:[{sessionId,title,mtime}] }
@@ -832,27 +824,36 @@ function afterSettings() {
   initFolderUI();
   initWindowUI();
   initSidebar();
-  initHome();
   initImport();
+  // In a grid window the home button opens the launcher (to switch/open another workspace).
+  document.getElementById('home-btn').addEventListener('click', () => window.grid.openHomeWindow());
   applyPerfClass();
 }
 
 // ---- boot ------------------------------------------------------------------
 (async function boot() {
-  let rows = 3, cols = 4;
-  try {
-    const st = await window.grid.getState();
-    if (st) {
-      Object.assign(settings, st.settings || {});
-      savedState = st;
-      if (st.layout) { rows = st.layout.rows; cols = st.layout.cols; }
-    }
-  } catch (_) {}
-  currentLayout = { rows, cols };
-  // Brand marks + theme must land before terminals are built (terminals read --term-bg).
+  let st = null;
+  try { st = await window.grid.getState(); } catch (_) {}
+  if (st) { Object.assign(settings, st.settings || {}); savedState = st; }
+
+  // Brand marks + theme apply in both modes.
   document.getElementById('brand-mark').innerHTML = HNA_MARK(18);
   document.getElementById('home-mark').innerHTML = HNA_MARK(30);
   applyTheme(settings.theme);
+
+  // Launcher window: show ONLY the home page. No grid, no sessions, until a folder is opened.
+  if (st && st.mode === 'home') {
+    document.body.classList.add('home-mode');
+    initHome();
+    showHome();
+    window.__ready = true;
+    return;
+  }
+
+  // Workspace window: build the grid.
+  let rows = 3, cols = 4;
+  if (st && st.layout) { rows = st.layout.rows; cols = st.layout.cols; }
+  currentLayout = { rows, cols };
   buildLayoutPicker();
   buildHelpMenu();
   const L = resolveLayout(`${rows}x${cols}`) || { key: `${rows}x${cols}`, rows, cols };
@@ -861,10 +862,9 @@ function afterSettings() {
   buildInitial(rows, cols);
   afterSettings();
 
-  // Home page on first run; otherwise offer to import this folder's existing sessions.
+  // Offer to import this folder's existing sessions (home page never shows in a grid window).
   importSeenAtBoot = !!(savedState && savedState.importSeen);
-  if (savedState && savedState.firstRun) { renderRecents(); showHome(); }
-  else maybeShowImport();
+  maybeShowImport();
 
   window.__ready = true;
 })();

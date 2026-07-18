@@ -19,7 +19,7 @@ export function tmpUserDataDir() {
 // launchCmd 'SHELL' => bare interactive shell (default for tests). userDataDir isolates state.
 // skipHome (default true) suppresses the first-run home overlay so tests reach the grid directly;
 // the home page itself is covered by home.mjs, which passes skipHome:false.
-export async function launchApp({ launchCmd = 'SHELL', userDataDir, extraEnv = {}, skipHome = true, autoImport = false } = {}) {
+export async function launchApp({ launchCmd = 'SHELL', userDataDir, extraEnv = {}, skipHome = true, autoImport = false, expectGrid = true } = {}) {
   const udd = userDataDir || tmpUserDataDir();
   const app = await electron.launch({
     args: [root, `--user-data-dir=${udd}`],
@@ -32,7 +32,9 @@ export async function launchApp({ launchCmd = 'SHELL', userDataDir, extraEnv = {
     },
   });
   const win = await app.firstWindow();
-  await win.waitForSelector('.xterm', { timeout: 20000 });
+  // Grid windows have a terminal; the launcher (home) window shows only the home overlay.
+  if (expectGrid) await win.waitForSelector('.xterm', { timeout: 20000 });
+  else await win.waitForSelector('#home-overlay.open', { timeout: 20000 });
 
   // On this box, a full graceful quit can hang on ConPTY teardown (the process never exits, even on
   // the committed baseline). Window state is written synchronously on the window 'close' event, so a
