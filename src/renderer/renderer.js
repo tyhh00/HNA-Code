@@ -114,6 +114,15 @@ const countSessions = () => terms.size;
 const paneOf = (sid) => panes.find((p) => p && p.tabs.includes(sid));
 const defaultName = (sid) => (/^\d+$/.test(sid) ? `Cell ${Number(sid) + 1}` : 'Claude');
 
+// Quote a dropped path the way a terminal would, so paths with spaces survive as one argument.
+function quotePath(p) {
+  if (!/[^\w@%+=:,.\/-]/.test(p)) return p;
+  return window.grid.platform === 'win32' ? `"${p}"` : `'${p.replace(/'/g, `'\\''`)}'`;
+}
+// A drop that misses a terminal must never navigate the window to the dropped file.
+document.addEventListener('dragover', (e) => e.preventDefault());
+document.addEventListener('drop', (e) => e.preventDefault());
+
 function createSession(sid, saved = {}) {
   const wrap = document.createElement('div');
   wrap.className = 'term-wrap';
@@ -150,11 +159,33 @@ function createSession(sid, saved = {}) {
     term.attachCustomKeyEventHandler((e) => {
       if (e.type !== 'keydown' || !e.ctrlKey || e.metaKey || e.altKey) return true;
       const k = (e.key || '').toLowerCase();
-      if (k === 'v' && !e.shiftKey) { const t = window.grid.clipboardRead(); if (t) term.paste(t); return false; }
+      // No text to paste (e.g. an image is on the clipboard): fall through so the raw ^V reaches
+      // claude, which reads the image off the system clipboard itself — exactly like a plain terminal.
+      if (k === 'v' && !e.shiftKey) { const t = window.grid.clipboardRead(); if (t) { term.paste(t); return false; } return true; }
       if (k === 'c' && term.hasSelection()) { window.grid.clipboardWrite(term.getSelection()); return false; }
       return true;
     });
   }
+  // Cmd+V (the native Edit-menu paste) is text-only, so pasting an image arrives "blank". When the
+  // clipboard holds an image and no text, swallow the DOM paste and send the raw ^V instead — the
+  // same byte a real terminal sends — so claude reads the image off the clipboard itself.
+  wrap.addEventListener('paste', (e) => {
+    if (!window.grid.clipboardRead() && window.grid.clipboardHasImage()) {
+      e.preventDefault(); e.stopPropagation();
+      window.grid.sendInput(sid, '\x16');
+    }
+  }, true);
+  // Dropping a file types its (quoted) path — how a real terminal behaves, and how images are
+  // usually dragged into claude. Never let Electron's default drop (navigate to the file) win.
+  wrap.addEventListener('dragover', (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
+  wrap.addEventListener('drop', (e) => {
+    e.preventDefault();
+    const paths = [...((e.dataTransfer && e.dataTransfer.files) || [])]
+      .map((f) => window.grid.pathForFile(f)).filter(Boolean);
+    if (!paths.length) return;
+    window.grid.sendInput(sid, paths.map(quotePath).join(' ') + ' ');
+    term.focus(); clearGlow(sid); markReal(sid);
+  });
   // Clicking into a glowing cell is an implicit acknowledgement -> fade the glow away.
   wrap.addEventListener('mousedown', () => clearGlow(sid));
   return rec;
@@ -171,6 +202,7 @@ function createPane(i) {
       `<button class="cell-acct" title="Claude account"></button>` +
       `<span class="cell-perf"></span>` +
       `<button class="cell-btn code" title="Open folder in VS Code">&lt;/&gt;</button>` +
+      `<button class="cell-btn reload" title="Restart this session (resumes the conversation — picks up new MCP servers)">⟳</button>` +
       `<button class="cell-btn close" title="Close this session">✕</button>` +
     `</div>` +
     `<div class="pane-body"><div class="pane-empty"><button class="pane-new">＋ New session</button></div></div>`;
@@ -181,6 +213,7 @@ function createPane(i) {
   };
   el.querySelector('.cell-acct').addEventListener('click', (e) => { e.stopPropagation(); openProfileMenu(pane, e.currentTarget); });
   el.querySelector('.cell-btn.code').addEventListener('click', () => { if (pane.active) window.grid.openInVsCode(pane.active); });
+  el.querySelector('.cell-btn.reload').addEventListener('click', () => { if (pane.active) reloadSession(pane.active); });
   el.querySelector('.cell-btn.close').addEventListener('click', () => { if (pane.active) closeTab(pane, pane.active); });
   el.querySelector('.pane-new').addEventListener('click', () => newSessionInPane(pane));
   el.querySelector('.cell-header').addEventListener('contextmenu', (e) => {
@@ -267,6 +300,15 @@ function addTab(pane, sid, { activate = false } = {}) {
   if (activate || pane.active == null) setActive(pane, sid);
   else { rec.wrap.style.display = 'none'; renderTabs(pane); }
   scheduleSidebar();
+}
+
+// Restart a cell's claude in place, resuming the same conversation — for "restart me to pick up
+// the new MCP server". Main kills the pty and respawns with --resume in the same folder + account.
+async function reloadSession(sid) {
+  const rec = terms.get(sid);
+  if (!rec) return;
+  try { rec.term.reset(); } catch (_) {}
+  await window.grid.reloadCell(sid, rec.term.cols, rec.term.rows);
 }
 
 function closeTab(pane, sid) {

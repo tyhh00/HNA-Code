@@ -3,7 +3,7 @@
 // Global settings (glow/sounds/launch/hooks) are shared across all windows.
 // Cells are globally keyed as `${windowId}#${index}`; the renderer only ever sees local indices.
 
-const { app, BrowserWindow, ipcMain, dialog, shell, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard } = require('electron');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
@@ -812,6 +812,12 @@ app.whenReady().then(async () => {
     if (configDir && configDir !== saved.configDir) { cellRec(rec, index).configDir = configDir; scheduleWindowSave(rec); }
     spawnCell(rec.state.windowId, index, { cols, rows, cwd, resumeId, configDir: configDir || undefined });
   });
+  // Clipboard bridge: the sandboxed preload has no `clipboard` module, so read/write live here.
+  // Sync replies because the renderer's paste/copy handlers need the answer in the same tick.
+  ipcMain.on('clipboard:readText', (e) => { let t = ''; try { t = clipboard.readText(); } catch (_) {} e.returnValue = t; });
+  ipcMain.on('clipboard:writeText', (_e, t) => { try { clipboard.writeText(String(t || '')); } catch (_) {} });
+  ipcMain.on('clipboard:hasImage', (e) => { let h = false; try { h = !clipboard.readImage().isEmpty(); } catch (_) {} e.returnValue = h; });
+
   ipcMain.on('pty:input', (e, index, data) => {
     const rec = recFromEvent(e); if (!rec) return;
     const p = sessions.get(`${rec.state.windowId}#${index}`); if (p) p.write(data);
@@ -906,6 +912,24 @@ app.whenReady().then(async () => {
     if (sot) c.configDir = sot.dir;
     scheduleWindowSave(rec);
     spawnCell(rec.state.windowId, index, { cwd: c.cwd, resumeId: sessionId, cols, rows, configDir: sot ? sot.dir : undefined });
+    return true;
+  });
+  // Restart a cell in place ("restart claude to pick up the new MCP server"): kill the pty and
+  // respawn resuming the same session in the same folder + account. Mirrors cell:ready's resume
+  // logic so a fresh cell (no conversation yet) simply restarts clean.
+  ipcMain.handle('cell:reload', (e, index, cols, rows) => {
+    const rec = recFromEvent(e); if (!rec) return false;
+    const gid = `${rec.state.windowId}#${index}`;
+    const p = sessions.get(gid); if (p) { try { p.kill(); } catch (_) {} sessions.delete(gid); }
+    const saved = rec.state.cells[index] || {};
+    let bound = saved.configDir || rec.state.defaultConfigDir || null;
+    if (bound && !isDirectory(bound)) bound = null;
+    const info = resumeInfo(saved.sessionId, saved.cwd, bound || undefined);
+    const resumeId = info.ok ? saved.sessionId : undefined;
+    const cwd = info.ok ? info.cwd : saved.cwd;
+    const multi = claudeDirRegistry().length > 1;
+    const configDir = bound || (multi && info.ok ? info.configDir : null);
+    spawnCell(rec.state.windowId, index, { cols, rows, cwd, resumeId, configDir: configDir || undefined });
     return true;
   });
   // ---- multi-account: Claude profiles --------------------------------------

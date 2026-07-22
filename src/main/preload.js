@@ -1,5 +1,5 @@
 // Bridges the sandboxed renderer to main over a minimal, explicit API.
-const { contextBridge, ipcRenderer, clipboard } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('grid', {
   platform: process.platform,
@@ -47,6 +47,7 @@ contextBridge.exposeInMainWorld('grid', {
   listProjects: () => ipcRenderer.invoke('sessions:projects'),
   scanProject: (dir) => ipcRenderer.invoke('sessions:scanProject', dir),
   importSession: (cellId, sessionId, cwd, cols, rows) => ipcRenderer.invoke('cell:importSession', cellId, sessionId, cwd, cols, rows),
+  reloadCell: (cellId, cols, rows) => ipcRenderer.invoke('cell:reload', cellId, cols, rows),
   newWindowWithSessions: (list) => ipcRenderer.invoke('window:newWithSessions', list),
   markImportSeen: () => ipcRenderer.send('workspace:importSeen'),
   openInVsCode: (cellId) => ipcRenderer.send('cell:openInVsCode', cellId),
@@ -73,6 +74,12 @@ contextBridge.exposeInMainWorld('grid', {
 
   // clipboard (Ctrl+V paste / Ctrl+C copy in the terminal — the app menu is disabled, which on
   // Windows also strips the default paste accelerator, so we bridge the clipboard ourselves)
-  clipboardRead: () => clipboard.readText(),
-  clipboardWrite: (text) => clipboard.writeText(String(text || '')),
+  // Synchronous IPC on purpose: paste/copy handlers must decide in the same tick (e.g. whether to
+  // preventDefault), and the sandboxed preload has no `clipboard` module of its own.
+  clipboardRead: () => ipcRenderer.sendSync('clipboard:readText'),
+  clipboardWrite: (text) => ipcRenderer.send('clipboard:writeText', String(text || '')),
+  clipboardHasImage: () => ipcRenderer.sendSync('clipboard:hasImage'),
+  // Dropped File objects carry no .path in Electron 43+ — webUtils is the only way back to the
+  // filesystem path, and it must run in the preload context.
+  pathForFile: (file) => { try { return webUtils.getPathForFile(file) || null; } catch (_) { return null; } },
 });
