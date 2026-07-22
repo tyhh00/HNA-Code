@@ -78,6 +78,8 @@ const settings = {
   sidebarCollapsed: false,
   recentFolders: [],
   theme: 'graphite',
+  overflowChoice: null, // 'windows' | 'tabs' | null (null = ask each time)
+  portOnSwitch: null,   // 'port' | 'fresh' | null (null = ask each time)
 };
 const THEMES = [
   { key: 'graphite', label: 'Graphite', accent: '#4c8dff', bg: '#1b1c1e' },
@@ -166,6 +168,7 @@ function createPane(i) {
     `<div class="cell-header">` +
       `<span class="cell-mark">${CELL_MARK}</span>` +
       `<div class="tabs"></div>` +
+      `<button class="cell-acct" title="Claude account"></button>` +
       `<span class="cell-perf"></span>` +
       `<button class="cell-btn code" title="Open folder in VS Code">&lt;/&gt;</button>` +
       `<button class="cell-btn close" title="Close this session">✕</button>` +
@@ -176,6 +179,7 @@ function createPane(i) {
     el, tabsEl: el.querySelector('.tabs'), bodyEl: el.querySelector('.pane-body'),
     perfEl: el.querySelector('.cell-perf'), emptyEl: el.querySelector('.pane-empty'), tabs: [], active: null,
   };
+  el.querySelector('.cell-acct').addEventListener('click', (e) => { e.stopPropagation(); openProfileMenu(pane, e.currentTarget); });
   el.querySelector('.cell-btn.code').addEventListener('click', () => { if (pane.active) window.grid.openInVsCode(pane.active); });
   el.querySelector('.cell-btn.close').addEventListener('click', () => { if (pane.active) closeTab(pane, pane.active); });
   el.querySelector('.pane-new').addEventListener('click', () => newSessionInPane(pane));
@@ -236,6 +240,7 @@ function setActive(pane, sid) {
   if (rec && rec.opened) { rec.fit.fit(); window.grid.resize(sid, rec.term.cols, rec.term.rows); }
   savePanes();
   scheduleSidebar();
+  refreshPaneProfile(pane);
 }
 
 function setPaneEmpty(pane, show) { if (pane.emptyEl) pane.emptyEl.classList.toggle('show', show); }
@@ -308,6 +313,195 @@ function startRename(nameEl, sid) {
   };
 }
 
+// ---- Claude profiles (multi-account) ---------------------------------------
+// Each profile is one CLAUDE_CONFIG_DIR = one signed-in Claude account. A cell runs under exactly
+// one, shows it as a coloured badge, and can be moved to another without losing the conversation.
+let profiles = [];
+let acctMenu = null;
+const PROFILE_COLORS = ['#4c8dff', '#d97757', '#74d18a', '#c68cf0', '#e6b93f', '#4fc4d6'];
+const normLower = (s) => String(s || '').toLowerCase();
+
+async function loadProfiles() {
+  try { profiles = (await window.grid.listProfiles()) || []; } catch (_) { profiles = []; }
+  // A single account looks exactly like the old app: no badges, no tint.
+  document.body.classList.toggle('multi-acct', profiles.length > 1);
+  return profiles;
+}
+// Stable fallback colour when the user hasn't picked one, keyed by registry position.
+function colorForProfile(dir) {
+  const i = profiles.findIndex((p) => normLower(p.dir) === normLower(dir));
+  return PROFILE_COLORS[(i < 0 ? 0 : i) % PROFILE_COLORS.length];
+}
+function profileColor(p) { return p.color || colorForProfile(p.dir); }
+
+function closeProfileMenu() { if (acctMenu) { acctMenu.remove(); acctMenu = null; } }
+document.addEventListener('click', closeProfileMenu);
+
+function openProfileMenu(pane, anchorEl) {
+  closeProfileMenu();
+  if (!pane.active || profiles.length < 2) return;
+  const curDir = pane.acctDir ? normLower(pane.acctDir) : null;
+  const menu = document.createElement('div');
+  menu.className = 'menu open acct-menu';
+  menu.innerHTML = '<div class="group-label">Run this session as</div>' + profiles.map((p) => {
+    const email = (p.account && p.account.email) || 'not signed in';
+    const cur = normLower(p.dir) === curDir ? ' current' : '';
+    return `<div class="menu-item acct-row${cur}" data-dir="${escapeHtml(p.dir)}">` +
+      `<span class="acct-dot" style="background:${escapeHtml(profileColor(p))}"></span>` +
+      `<span class="acct-body"><span class="acct-label">${escapeHtml(p.label)}</span>` +
+      `<span class="acct-email">${escapeHtml(email)}</span></span></div>`;
+  }).join('');
+  document.body.appendChild(menu);
+  const r = anchorEl.getBoundingClientRect();
+  menu.style.position = 'fixed';
+  menu.style.top = `${r.bottom + 4}px`;
+  menu.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - 262))}px`;
+  menu.addEventListener('click', (e) => e.stopPropagation());
+  menu.querySelectorAll('[data-dir]').forEach((el) => el.addEventListener('click', () => {
+    closeProfileMenu();
+    if (normLower(el.dataset.dir) !== curDir) switchPaneProfile(pane, el.dataset.dir);
+  }));
+  acctMenu = menu;
+}
+
+// Porting a live conversation to another account is a real, visible action, so it's confirmed
+// rather than done implicitly. Resolves 'port' | 'fresh' | 'cancel'.
+function askPort(targetLabel) {
+  if (settings.portOnSwitch === 'port' || settings.portOnSwitch === 'fresh') {
+    return Promise.resolve(settings.portOnSwitch);
+  }
+  return new Promise((resolve) => {
+    const ov = document.getElementById('port-overlay');
+    document.getElementById('port-desc').textContent =
+      `Port the conversation in this cell over to “${targetLabel}”, or start a new session there?`;
+    const remember = document.getElementById('port-remember');
+    remember.checked = false;
+    const done = (choice) => {
+      ov.classList.remove('open');
+      // Cancelling is not a preference — never persist it.
+      if (choice !== 'cancel' && remember.checked) { settings.portOnSwitch = choice; persistSettings(); }
+      resolve(choice);
+    };
+    document.getElementById('port-proceed').onclick = () => done('port');
+    document.getElementById('port-fresh').onclick = () => done('fresh');
+    document.getElementById('port-cancel').onclick = () => done('cancel');
+    ov.classList.add('open');
+  });
+}
+
+// Move the pane's active session to another account. Main copies the transcript across and
+// relaunches under the new profile; the terminal is reset because the pty is replaced.
+async function switchPaneProfile(pane, dir) {
+  const sid = pane.active; if (!sid) return;
+  const rec = terms.get(sid); if (!rec) return;
+  const target = profiles.find((p) => normLower(p.dir) === normLower(dir));
+  const label = target ? target.label : bn(dir);
+
+  // A cell that only STARTED Claude has a session id but no transcript behind it — there is nothing
+  // to carry over, so just move the cell. Asking (or attempting a port) here is what surfaced a
+  // bogus "no transcript found" error on an empty cell.
+  let portable = false;
+  try { portable = !!(await window.grid.cellPortable(sid)).portable; } catch (_) {}
+
+  let choice = 'fresh';
+  if (portable) {
+    choice = await askPort(label);
+    if (choice === 'cancel') return;
+  }
+
+  // Deliberately NOT resetting the terminal: main validates fully before it kills the pty, so a
+  // failed switch leaves the old session alive — wiping the buffer first would destroy the visible
+  // conversation for a switch that never happened, with no way to replay it.
+  rec.term.write(`\r\n\x1b[2m── ${choice === 'port' ? 'moving this session to' : 'starting a new session on'} ${label}… ──\x1b[0m\r\n`);
+  flashArrive(pane.el);
+  let res = null;
+  try {
+    res = await window.grid.switchProfile(sid, dir, rec.term.cols, rec.term.rows, { port: choice === 'port' });
+  } catch (_) {}
+  if (!res || res.ok === false) {
+    rec.term.write(`\x1b[31m── switch failed: ${(res && res.error) || 'unknown error'} — session unchanged ──\x1b[0m\r\n`);
+    return;
+  }
+  // A fresh start is a different conversation: drop the old session's sidebar identity.
+  if (!res.ported) { rec.real = false; rec.topic = null; rec.topicFetched = false; }
+  await refreshPaneProfile(pane);
+  scheduleSidebar();
+}
+
+// Paint the badge + cell tint for whatever account this pane's active session runs as.
+async function refreshPaneProfile(pane) {
+  const el = pane && pane.el && pane.el.querySelector('.cell-acct');
+  if (!el) return;
+  const clear = () => {
+    pane.acctDir = null;
+    el.textContent = '';
+    el.classList.remove('drift');
+    pane.el.classList.remove('has-acct');
+    pane.el.style.removeProperty('--cell-accent');
+  };
+  if (!pane.active || profiles.length < 2) { clear(); return; }
+  const askedFor = pane.active;
+  let info = null;
+  try { info = await window.grid.cellProfile(askedFor); } catch (_) {}
+  // Rapid tab switching can land two responses out of order; only the one for the tab that is
+  // still active may paint, otherwise a pane shows the previous session's account.
+  if (pane.active !== askedFor) return;
+  const p = info && info.profile;
+  if (!p) { clear(); return; }
+  pane.acctDir = p.dir;
+  const color = profileColor(p);
+  el.textContent = p.label;
+  el.style.setProperty('--acct', color);
+  pane.el.classList.add('has-acct');
+  pane.el.style.setProperty('--cell-accent', color);
+  // The transcript's source of truth can sit in a different profile than the cell is bound to
+  // (e.g. the session was used under another account since). Surface that rather than hide it.
+  const drift = info.sotDir && normLower(info.sotDir) !== normLower(p.dir);
+  el.classList.toggle('drift', !!drift);
+  const email = (p.account && p.account.email) || 'not signed in';
+  el.title = `Claude account: ${email}\nProfile: ${p.label}\n${p.dir}` +
+    (drift ? `\n\n⚠ Newest transcript is in "${info.sotLabel}" — switching there will pick it up.` : '') +
+    '\n\nClick to run this session as another account.';
+}
+function refreshAllPaneProfiles() { for (const p of panes) if (p) refreshPaneProfile(p); }
+
+// Settings: list every profile with its bound account, an editable label and a cell colour.
+function renderProfileList() {
+  const el = document.getElementById('prof-list');
+  if (!el) return;
+  if (!profiles.length) {
+    el.innerHTML = '<div class="hint" style="padding:8px 0">No Claude config directories found.</div>';
+    return;
+  }
+  el.innerHTML = profiles.map((p) => {
+    const email = (p.account && p.account.email) || 'not signed in';
+    return `<div class="prof-row">` +
+      `<input type="color" class="prof-color" data-dir="${escapeHtml(p.dir)}" value="${escapeHtml(profileColor(p))}" title="Cell colour for this account" />` +
+      `<div class="prof-body">` +
+      `<input type="text" class="prof-label" data-dir="${escapeHtml(p.dir)}" value="${escapeHtml(p.label)}" />` +
+      `<div class="prof-email">${escapeHtml(email)}${p.isDefault ? ' · default' : ''}</div>` +
+      `<div class="prof-path">${escapeHtml(p.dir)}</div></div>` +
+      (p.isDefault ? '' : `<button class="btn prof-hide" data-dir="${escapeHtml(p.dir)}" title="Stop showing this directory as an account">✕</button>`) +
+      `</div>`;
+  }).join('');
+  const update = (dir, meta) => {
+    window.grid.setProfileMeta(dir, meta);
+    const p = profiles.find((x) => normLower(x.dir) === normLower(dir));
+    if (p) Object.assign(p, meta);
+    refreshAllPaneProfiles();
+  };
+  el.querySelectorAll('.prof-color').forEach((inp) =>
+    inp.addEventListener('change', () => update(inp.dataset.dir, { color: inp.value })));
+  el.querySelectorAll('.prof-label').forEach((inp) =>
+    inp.addEventListener('change', () => update(inp.dataset.dir, { label: inp.value.trim() || bn(inp.dataset.dir) })));
+  el.querySelectorAll('.prof-hide').forEach((btn) => btn.addEventListener('click', async () => {
+    window.grid.hideProfile(btn.dataset.dir);
+    await loadProfiles();
+    renderProfileList();
+    refreshAllPaneProfiles();
+  }));
+}
+
 // ---- glow ------------------------------------------------------------------
 function setGlow(sid, s, { persist = true } = {}) {
   const rec = terms.get(sid); if (!rec) return;
@@ -334,6 +528,9 @@ window.grid.onLaunched((sid, info) => {
   window.__launch[sid] = info;
   // A resumed launch means a genuine conversation is back -> surface it in the sidebar.
   if (info && info.resumeId) { const r = terms.get(sid); if (r) { r.real = true; scheduleSidebar(); } }
+  // The launch reports which Claude profile the cell actually came up under.
+  const pane = paneOf(String(sid));
+  if (pane && pane.active === String(sid)) refreshPaneProfile(pane);
 });
 
 window.grid.onPerf((data) => {
@@ -574,6 +771,7 @@ function setLayout(key) {
   window.grid.layoutChanged(L.rows, L.cols);
 }
 window.__setLayout = (key) => setLayout(key);
+window.__switchPane = (dir, paneIndex = 0) => switchPaneProfile(panes[paneIndex], dir);
 
 function buildLayoutPicker() {
   const btn = document.getElementById('layout-btn');
@@ -615,7 +813,15 @@ function fileName(p) { return String(p).split(/[\\/]/).pop(); }
 function initSettingsUI() {
   const $ = (id) => document.getElementById(id);
   const overlay = $('settings-overlay');
-  $('settings-btn').addEventListener('click', () => overlay.classList.add('open'));
+  // Re-sync on open: the overflow choice and the profile list can both change from outside this
+  // panel (the overflow dialog's "remember", or a profile dir appearing/disappearing on disk).
+  $('settings-btn').addEventListener('click', async () => {
+    $('set-overflow').value = settings.overflowChoice || '';
+    $('set-port').value = settings.portOnSwitch || '';
+    await loadProfiles();
+    renderProfileList();
+    overlay.classList.add('open');
+  });
   $('settings-close').addEventListener('click', () => overlay.classList.remove('open'));
   overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.classList.remove('open'); });
 
@@ -634,6 +840,10 @@ function initSettingsUI() {
   $('set-done-enabled').addEventListener('change', (e) => { settings.doneSound.enabled = e.target.checked; persistSettings(); });
   $('set-perm-enabled').addEventListener('change', (e) => { settings.permissionSound.enabled = e.target.checked; persistSettings(); });
   $('set-perf').addEventListener('change', (e) => { settings.perfView = e.target.checked; persistSettings(); applyPerfClass(); });
+  $('set-overflow').value = settings.overflowChoice || '';
+  $('set-overflow').addEventListener('change', (e) => { settings.overflowChoice = e.target.value || null; persistSettings(); });
+  $('set-port').value = settings.portOnSwitch || '';
+  $('set-port').addEventListener('change', (e) => { settings.portOnSwitch = e.target.value || null; persistSettings(); });
 
   const pick = async (which) => {
     const r = await window.grid.pickSound();
@@ -660,6 +870,15 @@ function initSettingsUI() {
   }
 
   $('import-open').addEventListener('click', () => { overlay.classList.remove('open'); openImportManual(); });
+
+  renderProfileList();
+  $('prof-add').addEventListener('click', async () => {
+    const dir = await window.grid.addProfile();
+    if (!dir) return;
+    await loadProfiles();
+    renderProfileList();
+    refreshAllPaneProfiles();
+  });
 
   const hooksStatus = $('hooks-status');
   $('hooks-connect').addEventListener('click', async () => {
@@ -812,6 +1031,61 @@ function initHome() {
   document.getElementById('home-skip').addEventListener('click', () => { if (root) window.grid.openWorkspace(root); });
 }
 
+// Bulk resume lands one session at a time with this gap, so the user can see that several
+// sessions opened rather than the whole grid repainting at once.
+const STAGGER_MS = 500;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// Pulse a pane's accent ring as its session arrives. Removing the class lets .cell's existing
+// border/box-shadow transition fade the ring out instead of snapping.
+function flashArrive(el) {
+  if (!el) return;
+  el.classList.remove('arriving');
+  void el.offsetWidth; // force reflow so the animation restarts on a repeat arrival
+  el.classList.add('arriving');
+  setTimeout(() => el.classList.remove('arriving'), 900);
+}
+// A session's display name: its first prompt, or keep whatever the cell was already called.
+function importName(s, fallback) {
+  return (s.title && s.title !== '(untitled session)') ? s.title.slice(0, 28) : fallback;
+}
+// Resume a session into a NEW tab of an existing pane (the "stack as tabs here" overflow path).
+async function resumeIntoPaneTab(pane, s, folder) {
+  const sid = String(seq++);
+  createSession(sid, {});
+  addTab(pane, sid, { activate: true });
+  const rec = terms.get(sid);
+  if (!rec) return;
+  const name = importName(s, rec.name);
+  rec.name = name;
+  flashArrive(pane.el);
+  await window.grid.importSession(sid, s.sessionId, s.cwd || folder, rec.term.cols, rec.term.rows);
+  window.grid.rename(sid, name);
+  renderTabs(pane);
+}
+// More sessions than the grid can show: ask where the rest should go. Resolves to
+// 'windows' | 'tabs', short-circuiting if the user previously ticked "remember".
+function askOverflow(nHere, nOver) {
+  if (settings.overflowChoice === 'windows' || settings.overflowChoice === 'tabs') {
+    return Promise.resolve(settings.overflowChoice);
+  }
+  return new Promise((resolve) => {
+    const ov = document.getElementById('overflow-overlay');
+    document.getElementById('ovf-desc').textContent =
+      `${nHere + nOver} sessions selected, but this window shows ${nHere} at once. ` +
+      `Where should the remaining ${nOver} go?`;
+    const remember = document.getElementById('ovf-remember');
+    remember.checked = false;
+    const done = (choice) => {
+      ov.classList.remove('open');
+      if (remember.checked) { settings.overflowChoice = choice; persistSettings(); }
+      resolve(choice);
+    };
+    document.getElementById('ovf-windows').onclick = () => done('windows');
+    document.getElementById('ovf-tabs').onclick = () => done('tabs');
+    ov.classList.add('open');
+  });
+}
+
 let importScan = null; // { folder, sessions:[{sessionId,title,mtime}] }
 function fmtDate(ms) {
   if (!ms) return '';
@@ -899,23 +1173,45 @@ async function doImport(selected) {
   const capacity = panes.length;
   const here = selected.slice(0, capacity);
   const overflow = selected.slice(capacity);
+
+  // Decide the overflow destination BEFORE resuming anything, so the dialog isn't competing
+  // with a grid that's already animating sessions in.
+  const choice = overflow.length ? await askOverflow(here.length, overflow.length) : null;
+
   for (let i = 0; i < here.length; i++) {
     const pane = panes[i]; if (!pane || !pane.active) continue;
     const sid = pane.active; const rec = terms.get(sid); if (!rec) continue;
     try { rec.term.reset(); } catch (_) {}
-    const name = (here[i].title && here[i].title !== '(untitled session)') ? here[i].title.slice(0, 28) : rec.name;
+    const name = importName(here[i], rec.name);
     rec.name = name;
+    flashArrive(pane.el);
     // Resume each session in ITS OWN folder (where Claude stored it), not the current workspace.
     await window.grid.importSession(sid, here[i].sessionId, here[i].cwd || folder, rec.term.cols, rec.term.rows);
     window.grid.rename(sid, name);
     renderTabs(pane);
+    if (i < here.length - 1) await sleep(STAGGER_MS);
   }
   scheduleSidebar();
+  if (!overflow.length) return;
+
+  // Stack the rest as tabs in this window, spread round-robin so no single pane piles up.
+  if (choice === 'tabs') {
+    for (let i = 0; i < overflow.length; i++) {
+      const pane = panes[i % panes.length];
+      if (!pane) continue;
+      await sleep(STAGGER_MS);
+      await resumeIntoPaneTab(pane, overflow[i], folder);
+    }
+    scheduleSidebar();
+    return;
+  }
+
+  // Otherwise spill into additional windows, one grid-full (16) at a time.
   for (let i = 0; i < overflow.length; i += 16) {
     const chunk = overflow.slice(i, i + 16).map((s) => ({
-      sessionId: s.sessionId, cwd: s.cwd || folder,
-      title: (s.title && s.title !== '(untitled session)') ? s.title.slice(0, 28) : undefined,
+      sessionId: s.sessionId, cwd: s.cwd || folder, title: importName(s, undefined),
     }));
+    await sleep(STAGGER_MS);
     await window.grid.newWindowWithSessions(chunk);
   }
 }
@@ -1005,8 +1301,11 @@ function afterSettings() {
   const L = resolveLayout(`${rows}x${cols}`) || { key: `${rows}x${cols}`, rows, cols };
   updateLayoutBtn(L);
   updateLayoutMenuActive(L.key);
+  // Profiles must be known before the grid builds, so cells get their account badge on first paint.
+  await loadProfiles();
   buildInitial(rows, cols);
   afterSettings();
+  refreshAllPaneProfiles();
 
   // Offer to import this folder's existing sessions (home page never shows in a grid window).
   importSeenAtBoot = !!(savedState && savedState.importSeen);

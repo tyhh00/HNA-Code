@@ -22,7 +22,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # Electron 43 and @electron/rebuild 4 require Node >= 22.12; 24 is the current LTS.
+          node-version: 24
           cache: npm
       - run: npm ci
       - name: Build (unsigned)

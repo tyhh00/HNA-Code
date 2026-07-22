@@ -52,6 +52,16 @@ contextBridge.exposeInMainWorld('grid', {
   openInVsCode: (cellId) => ipcRenderer.send('cell:openInVsCode', cellId),
   openExternal: (url) => ipcRenderer.send('open:external', url),
 
+  // multi-account: Claude config dirs (profiles)
+  listProfiles: () => ipcRenderer.invoke('profiles:list'),
+  addProfile: () => ipcRenderer.invoke('profiles:add'),
+  setProfileMeta: (dir, meta) => ipcRenderer.send('profiles:setMeta', dir, meta),
+  hideProfile: (dir) => ipcRenderer.send('profiles:hide', dir),
+  cellProfile: (cellId) => ipcRenderer.invoke('cell:profile', cellId),
+  cellPortable: (cellId) => ipcRenderer.invoke('cell:portable', cellId),
+  switchProfile: (cellId, dir, cols, rows, opts) => ipcRenderer.invoke('cell:switchProfile', cellId, dir, cols, rows, opts),
+  setWindowDefaultProfile: (dir) => ipcRenderer.send('window:setDefaultProfile', dir),
+
   // windows
   windowInfo: () => ipcRenderer.invoke('window:info'),
   newWindow: () => ipcRenderer.send('window:new'),

@@ -37,6 +37,10 @@ let settings = {
   workspaceChosen: false,  // true once the user has picked a folder (or dismissed the home page)
   seenImport: {},          // normFolder -> true; a folder whose import prompt was already handled
   theme: 'graphite',       // active color theme (graphite | claude | midnight | light)
+  overflowChoice: null,    // bulk resume overflow: 'windows' | 'tabs' | null (null = ask each time)
+  portOnSwitch: null,      // account switch: 'port' | 'fresh' | null (null = ask each time)
+  extraClaudeDirs: [],     // Claude config dirs added by hand (beyond the ~/.claude* auto-scan)
+  claudeDirMeta: {},       // normalized dir -> { label, color } for the multi-account UI
 };
 function settingsFile() { return path.join(app.getPath('userData'), 'settings.json'); }
 function loadSettings() {
@@ -159,12 +163,90 @@ function launchBase() {
   return (settings.launch && settings.launch.command) || 'claude';
 }
 
-function claudeDir() { return process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'); }
-function sessionTranscriptFile(sessionId, cwd) {
-  if (!sessionId) return null;
-  const projects = path.join(claudeDir(), 'projects');
+// ---- Claude profiles (multi-account) ---------------------------------------
+// A "profile" is one CLAUDE_CONFIG_DIR: its own credentials, settings and transcript store. Cells
+// can each run against a different one, which is how several Claude accounts stay live at once.
+function defaultClaudeDir() { return path.join(os.homedir(), '.claude'); }
+function claudeDir() { return process.env.CLAUDE_CONFIG_DIR || defaultClaudeDir(); }
+function isDirectory(p) { try { return fs.statSync(p).isDirectory(); } catch (_) { return false; } }
+
+// The default profile keeps its config at ~/.claude.json (home root); a custom CLAUDE_CONFIG_DIR
+// keeps it INSIDE the dir. Getting this asymmetry wrong silently reports "no account".
+function configJsonFor(dir) {
+  return normFolder(dir) === normFolder(defaultClaudeDir())
+    ? path.join(os.homedir(), '.claude.json')
+    : path.join(dir, '.claude.json');
+}
+// Which account a profile is signed in as. Read from plain config JSON — never from credentials
+// (those live in the OS keychain on macOS and are none of our business).
+function accountOf(dir) {
+  try {
+    const oa = JSON.parse(fs.readFileSync(configJsonFor(dir), 'utf8')).oauthAccount || {};
+    return { email: oa.emailAddress || null, org: oa.organizationName || null, uuid: oa.accountUuid || null };
+  } catch (_) { return { email: null, org: null, uuid: null }; }
+}
+// Profiles found by convention: ~/.claude plus any ~/.claude-* that has a transcript store or its
+// own config. An explicit CLAUDE_CONFIG_DIR (tests, or a user pinning one profile) wins outright
+// and suppresses the scan, so an isolated environment stays isolated.
+function discoverClaudeDirs() {
+  if (process.env.CLAUDE_CONFIG_DIR) return [process.env.CLAUDE_CONFIG_DIR];
+  const home = os.homedir();
+  const out = [];
+  if (isDirectory(defaultClaudeDir())) out.push(defaultClaudeDir());
+  try {
+    for (const name of fs.readdirSync(home)) {
+      if (!/^\.claude-/.test(name)) continue;
+      const full = path.join(home, name);
+      if (!isDirectory(full)) continue;
+      if (isDirectory(path.join(full, 'projects')) || fs.existsSync(path.join(full, '.claude.json'))) out.push(full);
+    }
+  } catch (_) {}
+  return out;
+}
+// Auto-discovered profiles + any the user added by hand, each with its bound account and colour.
+function claudeDirRegistry() {
+  const manual = process.env.CLAUDE_CONFIG_DIR ? [] : (settings.extraClaudeDirs || []);
+  const meta = settings.claudeDirMeta || {};
+  const seen = new Set();
+  const out = [];
+  for (const d of [...discoverClaudeDirs(), ...manual]) {
+    const key = normFolder(d);
+    if (seen.has(key) || !isDirectory(d)) continue;
+    seen.add(key);
+    const m = meta[key] || {};
+    if (m.hidden) continue; // user dismissed it (e.g. a stray ~/.claude-backup the scan picked up)
+    out.push({
+      dir: d, key, label: m.label || baseName(d), color: m.color || null,
+      account: accountOf(d), isDefault: key === normFolder(claudeDir()),
+    });
+  }
+  return out;
+}
+// Hooks must exist in EVERY profile, not just the ambient one: a profile without them emits no
+// signals, so cells running under it get no glow and — because onSignal is where a fresh session's
+// id is captured — would never persist or resume.
+function hooksForAllProfiles(fn) {
+  const dirs = claudeDirRegistry().map((p) => p.dir);
+  const out = [];
+  for (const d of (dirs.length ? dirs : [claudeDir()])) {
+    try { out.push(fn(HOOK_SCRIPT, d)); } catch (_) {}
+  }
+  return out;
+}
+function installHooksEverywhere() { return hooksForAllProfiles(hooks.installHooks); }
+function uninstallHooksEverywhere() { return hooksForAllProfiles(hooks.uninstallHooks); }
+
+function profileFor(dir) {
+  const key = normFolder(dir || claudeDir());
+  return claudeDirRegistry().find((p) => p.key === key) || null;
+}
+
+// A session's transcript within ONE profile.
+function sessionFileIn(dir, sessionId, cwd) {
+  if (!sessionId || !dir) return null;
+  const projects = path.join(dir, 'projects');
   if (cwd) {
-    const g = path.join(projects, cwd.replace(/[:\\/]/g, '-'), `${sessionId}.jsonl`);
+    const g = path.join(projects, encodeProject(cwd), `${sessionId}.jsonl`);
     try { if (fs.existsSync(g)) return g; } catch (_) {}
   }
   try {
@@ -174,6 +256,28 @@ function sessionTranscriptFile(sessionId, cwd) {
     }
   } catch (_) {}
   return null;
+}
+// Switching an account COPIES the transcript and leaves the original, so one sessionId can exist in
+// several profiles. Newest mtime is the source of truth: a switch stamps the copy, so the target
+// profile wins immediately and keeps winning while it's the one being used.
+function resolveSessionSoT(sessionId, cwd) {
+  if (!sessionId) return null;
+  let best = null;
+  for (const p of claudeDirRegistry()) {
+    const file = sessionFileIn(p.dir, sessionId, cwd);
+    if (!file) continue;
+    let mtime = 0;
+    try { mtime = fs.statSync(file).mtimeMs; } catch (_) { continue; }
+    if (!best || mtime > best.mtime) best = { file, mtime, dir: p.dir, profile: p };
+  }
+  return best;
+}
+// The transcript to read for a session. `dir` pins a specific profile; otherwise the SoT wins.
+function sessionTranscriptFile(sessionId, cwd, dir) {
+  if (!sessionId) return null;
+  if (dir) return sessionFileIn(dir, sessionId, cwd);
+  const sot = resolveSessionSoT(sessionId, cwd);
+  return sot ? sot.file : null;
 }
 function readHead(file, bytes = 262144) {
   try {
@@ -193,13 +297,15 @@ function isResumable(sessionId, cwd) {
 // project folder, so we must launch it in the exact cwd the transcript was recorded under (read
 // from the transcript itself) — not wherever the cell was last saved. This fixes the intermittent
 // "No conversation found with session ID" when a session's real folder differs from the cell's.
-function resumeInfo(sessionId, cwd) {
+// `dir` pins a profile (a cell the user bound to a specific account); otherwise the source-of-truth
+// profile is chosen by recency, and `configDir` comes back so the cell relaunches under it.
+function resumeInfo(sessionId, cwd, dir) {
   if (!sessionId) return { ok: false };
-  const file = sessionTranscriptFile(sessionId, cwd);
-  if (!file) return { ok: false };
-  const head = readHead(file);
+  const sot = dir ? { file: sessionFileIn(dir, sessionId, cwd), dir } : resolveSessionSoT(sessionId, cwd);
+  if (!sot || !sot.file) return { ok: false };
+  const head = readHead(sot.file);
   if (!/"type"\s*:\s*"user"/.test(head)) return { ok: false };
-  return { ok: true, cwd: cwdFromText(head) || cwd };
+  return { ok: true, cwd: cwdFromText(head) || cwd, configDir: sot.dir };
 }
 // Encode a folder path the way Claude stores its per-project transcript directory.
 function encodeProject(folder) { return String(folder).replace(/[:\\/]/g, '-'); }
@@ -232,36 +338,66 @@ function sessionsInDir(dir, fallbackCwd, exclude = new Set()) {
   out.sort((a, b) => b.mtime - a.mtime);
   return out;
 }
-// Sessions that live under `folder` (its own project dir).
+// Tag a scanned session with the profile it came from, so the UI can show which account owns it.
+function tagged(s, p) {
+  return { ...s, configDir: p.dir, profileLabel: p.label, profileColor: p.color, account: p.account };
+}
+// Collapse the same sessionId seen in several profiles down to its source of truth (newest wins).
+// Without this a session that's been switched between accounts would be listed once per profile.
+function dedupeToSoT(rows) {
+  const best = new Map();
+  for (const s of rows) {
+    const prev = best.get(s.sessionId);
+    if (!prev || s.mtime > prev.mtime) best.set(s.sessionId, s);
+  }
+  return [...best.values()].sort((a, b) => b.mtime - a.mtime);
+}
+// Sessions that live under `folder`, across every profile.
 function scanWorkspaceSessions(folder, exclude = new Set()) {
-  return sessionsInDir(path.join(claudeDir(), 'projects', encodeProject(folder)), folder, exclude);
+  const rows = [];
+  for (const p of claudeDirRegistry()) {
+    for (const s of sessionsInDir(path.join(p.dir, 'projects', encodeProject(folder)), folder, exclude)) rows.push(tagged(s, p));
+  }
+  return dedupeToSoT(rows);
 }
 // Sessions in a specific encoded project directory (used by the Settings importer, which can browse
 // across every project Claude knows about, not just the current workspace).
 function scanProjectSessions(encodedDir) {
-  return sessionsInDir(path.join(claudeDir(), 'projects', encodedDir), null);
+  const rows = [];
+  for (const p of claudeDirRegistry()) {
+    for (const s of sessionsInDir(path.join(p.dir, 'projects', encodedDir), null)) rows.push(tagged(s, p));
+  }
+  return dedupeToSoT(rows);
 }
 // Every Claude project directory that has at least one resumable session, with its real path.
+// Merged across profiles: a project folder is the same project whichever account worked in it.
+// Sessions are keyed by id so a transcript copied between profiles counts once, not twice.
 function listProjects() {
-  const base = path.join(claudeDir(), 'projects');
-  const out = [];
-  let dirs = [];
-  try { dirs = fs.readdirSync(base); } catch (_) { return out; }
-  for (const d of dirs) {
-    const full = path.join(base, d);
-    try { if (!fs.statSync(full).isDirectory()) continue; } catch (_) { continue; }
-    let count = 0, cwd = null, latest = 0, files = [];
-    try { files = fs.readdirSync(full); } catch (_) {}
-    for (const f of files) {
-      if (!f.endsWith('.jsonl')) continue;
-      const head = readHead(path.join(full, f), 65536);
-      if (!/"type"\s*:\s*"user"/.test(head)) continue;
-      count++;
-      if (!cwd) cwd = cwdFromText(head);
-      try { const m = fs.statSync(path.join(full, f)).mtimeMs; if (m > latest) latest = m; } catch (_) {}
+  const byDir = new Map(); // encoded project dir -> { dir, path, sessions:Map(sessionId->mtime), latest }
+  for (const p of claudeDirRegistry()) {
+    const base = path.join(p.dir, 'projects');
+    let dirs = [];
+    try { dirs = fs.readdirSync(base); } catch (_) { continue; }
+    for (const d of dirs) {
+      const full = path.join(base, d);
+      if (!isDirectory(full)) continue;
+      let files = [];
+      try { files = fs.readdirSync(full); } catch (_) { continue; }
+      for (const f of files) {
+        if (!f.endsWith('.jsonl')) continue;
+        const head = readHead(path.join(full, f), 65536);
+        if (!/"type"\s*:\s*"user"/.test(head)) continue;
+        let e = byDir.get(d);
+        if (!e) { e = { dir: d, path: null, sessions: new Map(), latest: 0 }; byDir.set(d, e); }
+        if (!e.path) e.path = cwdFromText(head);
+        let m = 0; try { m = fs.statSync(path.join(full, f)).mtimeMs; } catch (_) {}
+        const sid = f.slice(0, -6);
+        if (m > (e.sessions.get(sid) || 0)) e.sessions.set(sid, m);
+        if (m > e.latest) e.latest = m;
+      }
     }
-    if (count > 0) out.push({ dir: d, path: cwd || d, count, latest });
   }
+  const out = [...byDir.values()].map((e) => ({ dir: e.dir, path: e.path || e.dir, count: e.sessions.size, latest: e.latest }));
   out.sort((a, b) => b.latest - a.latest);
   return out;
 }
@@ -461,10 +597,15 @@ function spawnCell(windowId, index, opts = {}) {
   const line = opts.resumeId && base ? `${base} --resume ${opts.resumeId}` : base;
   const { file, args } = platform.cellCommand(line);
 
+  // A cell bound to a Claude profile launches under that profile's CLAUDE_CONFIG_DIR, which is what
+  // makes it run as that account. Unbound cells inherit the ambient env exactly as before.
   const proc = pty.spawn(file, args, {
     name: 'xterm-256color',
     cols: opts.cols || 80, rows: opts.rows || 24, cwd,
-    env: { ...process.env, CC_CELL_ID: gid, CC_SIGNAL_PORT: String(signal.port), CC_SIGNAL_TOKEN: signal.token },
+    env: {
+      ...process.env, CC_CELL_ID: gid, CC_SIGNAL_PORT: String(signal.port), CC_SIGNAL_TOKEN: signal.token,
+      ...(opts.configDir ? { CLAUDE_CONFIG_DIR: opts.configDir } : {}),
+    },
   });
   proc.onData((d) => sendTo(windows.get(windowId), 'pty:data', index, d));
   proc.onExit(() => {
@@ -474,7 +615,12 @@ function spawnCell(windowId, index, opts = {}) {
     if (sessions.get(gid) === proc) { sessions.delete(gid); sendTo(windows.get(windowId), 'pty:exit', index); }
   });
   sessions.set(gid, proc);
-  sendTo(rec, 'cell:launched', index, { line, cwd, resumeId: opts.resumeId || null });
+  const prof = opts.configDir ? profileFor(opts.configDir) : null;
+  sendTo(rec, 'cell:launched', index, {
+    line, cwd, resumeId: opts.resumeId || null,
+    configDir: opts.configDir || null,
+    profile: prof ? { dir: prof.dir, label: prof.label, color: prof.color, account: prof.account } : null,
+  });
   return proc;
 }
 
@@ -573,7 +719,7 @@ app.whenReady().then(async () => {
   }
   loadSettings();
   currentWorkspace = resolveWorkspace(); // a sensible default; the grid only opens once a folder is chosen
-  if (settings.autoHooks !== false) { try { hooks.installHooks(HOOK_SCRIPT); } catch (_) {} }
+  if (settings.autoHooks !== false) { try { installHooksEverywhere(); } catch (_) {} }
   await initSignal();
   applyPerfSetting();
 
@@ -597,20 +743,36 @@ app.whenReady().then(async () => {
     return { topic: firstPrompt(c.sessionId, c.cwd), mtime };
   });
 
-  ipcMain.handle('hooks:install', () => hooks.installHooks(HOOK_SCRIPT));
-  ipcMain.handle('hooks:uninstall', () => hooks.uninstallHooks(HOOK_SCRIPT));
+  ipcMain.handle('hooks:install', () => installHooksEverywhere());
+  ipcMain.handle('hooks:uninstall', () => uninstallHooksEverywhere());
 
   ipcMain.on('cell:ready', (e, index, cols, rows) => {
     const rec = recFromEvent(e); if (!rec) return;
     if (sessions.has(`${rec.state.windowId}#${index}`)) return;
     const saved = rec.state.cells[index] || {};
+    // A cell remembers the Claude profile it was bound to (falling back to the window's default), so
+    // reopening a window relaunches every cell under the same account it was running as before.
+    let bound = saved.configDir || rec.state.defaultConfigDir || null;
+    // A profile directory can be deleted or renamed between runs. Trusting a dead binding would
+    // launch Claude against a nonexistent config (blank + unauthenticated) AND skip the resume,
+    // silently losing the conversation — so drop the stale binding and fall back to the SoT.
+    if (bound && !isDirectory(bound)) {
+      bound = null;
+      if (saved.configDir) { delete cellRec(rec, index).configDir; scheduleWindowSave(rec); }
+    }
     // Only resume sessions with a persisted conversation, and do it in the folder the transcript
     // was actually recorded under (so `claude --resume` can find it).
-    const info = resumeInfo(saved.sessionId, saved.cwd);
+    const info = resumeInfo(saved.sessionId, saved.cwd, bound || undefined);
     const resumeId = info.ok ? saved.sessionId : undefined;
     const cwd = info.ok ? info.cwd : saved.cwd;
     if (info.ok && info.cwd && info.cwd !== saved.cwd) { const c = cellRec(rec, index); c.cwd = info.cwd; scheduleWindowSave(rec); }
-    spawnCell(rec.state.windowId, index, { cols, rows, cwd, resumeId });
+    // With several profiles around, an unbound cell adopts whichever one its session actually lives
+    // in, so the binding shows up in the UI without the user setting it. With a single profile we
+    // pass nothing and stay on exactly the pre-multi-account launch path.
+    const multi = claudeDirRegistry().length > 1;
+    const configDir = bound || (multi && info.ok ? info.configDir : null);
+    if (configDir && configDir !== saved.configDir) { cellRec(rec, index).configDir = configDir; scheduleWindowSave(rec); }
+    spawnCell(rec.state.windowId, index, { cols, rows, cwd, resumeId, configDir: configDir || undefined });
   });
   ipcMain.on('pty:input', (e, index, data) => {
     const rec = recFromEvent(e); if (!rec) return;
@@ -699,10 +861,139 @@ app.whenReady().then(async () => {
     const gid = `${rec.state.windowId}#${index}`;
     const p = sessions.get(gid); if (p) { try { p.kill(); } catch (_) {} sessions.delete(gid); }
     const c = cellRec(rec, index); c.sessionId = sessionId; c.cwd = cwd || folderOf(rec);
+    // Resume under whichever profile actually holds this transcript, so an imported session keeps
+    // running as the account that owns it rather than the ambient default.
+    const multi = claudeDirRegistry().length > 1;
+    const sot = multi ? resolveSessionSoT(sessionId, c.cwd) : null;
+    if (sot) c.configDir = sot.dir;
     scheduleWindowSave(rec);
-    spawnCell(rec.state.windowId, index, { cwd: c.cwd, resumeId: sessionId, cols, rows });
+    spawnCell(rec.state.windowId, index, { cwd: c.cwd, resumeId: sessionId, cols, rows, configDir: sot ? sot.dir : undefined });
     return true;
   });
+  // ---- multi-account: Claude profiles --------------------------------------
+  ipcMain.handle('profiles:list', () => claudeDirRegistry().map((p) => ({
+    dir: p.dir, label: p.label, color: p.color, account: p.account, isDefault: p.isDefault,
+  })));
+  ipcMain.handle('profiles:add', async (e) => {
+    const rec = recFromEvent(e);
+    const r = await dialog.showOpenDialog(rec ? rec.win : null, {
+      title: 'Add a Claude config directory (CLAUDE_CONFIG_DIR)', properties: ['openDirectory'],
+    });
+    if (r.canceled || !r.filePaths[0]) return null;
+    const dir = r.filePaths[0];
+    settings.extraClaudeDirs = (settings.extraClaudeDirs || []).filter((d) => normFolder(d) !== normFolder(dir));
+    settings.extraClaudeDirs.push(dir);
+    // Un-hide it if it was previously dismissed, and give it hooks immediately — a profile without
+    // them emits no signals, so cells bound to it would never glow or persist their session id.
+    settings.claudeDirMeta = settings.claudeDirMeta || {};
+    const key = normFolder(dir);
+    if (settings.claudeDirMeta[key]) delete settings.claudeDirMeta[key].hidden;
+    saveSettings();
+    if (settings.autoHooks !== false) { try { hooks.installHooks(HOOK_SCRIPT, dir); } catch (_) {} }
+    return dir;
+  });
+  // Hide a profile from the app (auto-discovered dirs can't be deleted, only dismissed). Cells
+  // already bound to it keep working; it just stops appearing in the switch menu and the registry.
+  ipcMain.on('profiles:hide', (_e, dir) => {
+    const key = normFolder(dir);
+    settings.extraClaudeDirs = (settings.extraClaudeDirs || []).filter((d) => normFolder(d) !== key);
+    settings.claudeDirMeta = settings.claudeDirMeta || {};
+    settings.claudeDirMeta[key] = { ...(settings.claudeDirMeta[key] || {}), hidden: true };
+    saveSettings();
+  });
+  ipcMain.on('profiles:setMeta', (_e, dir, meta) => {
+    settings.claudeDirMeta = settings.claudeDirMeta || {};
+    const key = normFolder(dir);
+    settings.claudeDirMeta[key] = { ...(settings.claudeDirMeta[key] || {}), ...(meta || {}) };
+    saveSettings();
+  });
+  // What a cell is bound to, and where its transcript actually lives right now.
+  ipcMain.handle('cell:profile', (e, index) => {
+    const rec = recFromEvent(e); if (!rec) return null;
+    const c = rec.state.cells[index] || {};
+    const bound = c.configDir || rec.state.defaultConfigDir || null;
+    const sot = c.sessionId ? resolveSessionSoT(c.sessionId, c.cwd) : null;
+    const p = profileFor(bound || (sot && sot.dir));
+    return {
+      configDir: bound,
+      profile: p ? { dir: p.dir, label: p.label, color: p.color, account: p.account } : null,
+      sotDir: sot ? sot.dir : null,
+      sotLabel: sot ? sot.profile.label : null,
+    };
+  });
+  ipcMain.on('window:setDefaultProfile', (e, dir) => {
+    const rec = recFromEvent(e); if (!rec) return;
+    rec.state.defaultConfigDir = dir || null;
+    saveWindowNow(rec);
+  });
+  // Move a live session to another Claude account: COPY its transcript into the target profile
+  // (the original stays as a rollback), stamp the copy so "newest wins" makes the target the source
+  // of truth, then relaunch the cell under that profile with --resume.
+  // Can this cell's conversation actually be carried to another account? A cell that has merely
+  // STARTED Claude already has a sessionId (the SessionStart hook sets it) but no transcript on
+  // disk until a real turn happens — so "has a session id" is not the same as "has something to
+  // port", and treating them as equal is what produced a bogus "no transcript found" error.
+  ipcMain.handle('cell:portable', (e, index) => {
+    const rec = recFromEvent(e); if (!rec) return { portable: false };
+    const c = rec.state.cells[index] || {};
+    if (!c.sessionId) return { portable: false };
+    return { portable: !!resumeInfo(c.sessionId, c.cwd).ok, sessionId: c.sessionId };
+  });
+  // Move a cell to another Claude account. With `port` the transcript is COPIED into the target
+  // profile (the original stays as a rollback) and resumed there; otherwise the cell simply rebinds
+  // and starts a fresh conversation. A cell with nothing to port always takes the fresh path.
+  ipcMain.handle('cell:switchProfile', (e, index, targetDir, cols, rows, opts = {}) => {
+    const rec = recFromEvent(e); if (!rec) return { ok: false, error: 'no window' };
+    if (!isDirectory(targetDir)) return { ok: false, error: 'that Claude directory no longer exists' };
+    const c = cellRec(rec, index);
+    // Portability must use the SAME test as cell:portable — a transcript merely EXISTING is not
+    // enough, it needs a real user turn to be resumable. Deciding on file existence alone would
+    // copy an empty transcript and hand `claude --resume` an id it will reject.
+    const portable = c.sessionId ? resumeInfo(c.sessionId, c.cwd).ok : false;
+    const sot = portable ? resolveSessionSoT(c.sessionId, c.cwd) : null;
+    const wantPort = opts.port !== false;
+    let resumeId;
+
+    if (sot && wantPort) {
+      // Resume only works from the folder the transcript was recorded under, so mirror that layout.
+      const realCwd = cwdFromText(readHead(sot.file)) || c.cwd || folderOf(rec);
+      const destDir = path.join(targetDir, 'projects', encodeProject(realCwd));
+      const dest = path.join(destDir, `${c.sessionId}.jsonl`);
+      if (normFolder(sot.file) !== normFolder(dest)) {
+        try {
+          fs.mkdirSync(destDir, { recursive: true });
+          fs.copyFileSync(sot.file, dest);
+          // The SoT rule is "newest mtime wins", so the copy MUST end up strictly newer than its
+          // source. Don't rely on the copy's incidental mtime, and don't stamp a bare Date.now():
+          // stored mtimes carry sub-millisecond precision while Date.now() is millisecond-resolution,
+          // so a naive stamp can land BEHIND a source written moments earlier — which would leave
+          // the stale original as the source of truth and resume the wrong copy.
+          const stamp = Math.max(Date.now(), sot.mtime + 1000) / 1000;
+          fs.utimesSync(dest, stamp, stamp);
+        } catch (err) {
+          return { ok: false, error: String((err && err.message) || err) };
+        }
+      }
+      c.cwd = realCwd;
+      resumeId = c.sessionId;
+    } else {
+      // Nothing to carry over, or the user asked for a clean start: drop the old session id so the
+      // cell comes up as a new conversation and a later restart doesn't try to resume an id the
+      // target profile has never seen.
+      delete c.sessionId;
+    }
+
+    c.configDir = targetDir;
+    scheduleWindowSave(rec);
+    const gid = `${rec.state.windowId}#${index}`;
+    const p = sessions.get(gid);
+    if (p) { try { p.kill(); } catch (_) {} sessions.delete(gid); }
+    spawnCell(rec.state.windowId, index, {
+      cwd: c.cwd || folderOf(rec), resumeId, configDir: targetDir, cols, rows,
+    });
+    return { ok: true, ported: !!resumeId };
+  });
+
   // Overflow import: create a new window whose cells are pre-seeded to resume `sessionList`.
   ipcMain.handle('window:newWithSessions', (e, sessionList) => {
     if (!Array.isArray(sessionList) || !sessionList.length) return null;

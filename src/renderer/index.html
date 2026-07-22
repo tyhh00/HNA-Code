@@ -268,6 +268,39 @@
     .tab.tab-permission::before { background: var(--permission); }
     .tab.tab-running::before { background: var(--ok); }
 
+    /* ===== Claude account badge (multi-account) ==========================
+       Only rendered when more than one Claude config dir exists, so single-account
+       setups look exactly as before. The tint tells you which sub a cell is burning. */
+    /* Shrinkable (0 1 auto), so in a dense grid the badge truncates alongside the tab instead of
+       forcing the session name down to "C…". The dot never shrinks, so the account stays readable
+       at any cell width even when the label is clipped away. */
+    .cell-acct {
+      flex: 0 1 auto; min-width: 0; display: none; align-items: center; gap: 5px;
+      background: transparent; border: 1px solid var(--border-subtle); color: var(--text-2);
+      border-radius: 20px; font-size: 10.5px; padding: 1px 8px 1px 6px; cursor: pointer;
+      max-width: 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    body.multi-acct .cell-acct { display: inline-flex; }
+    .cell-acct::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--acct, var(--accent)); flex: 0 0 auto; }
+    .cell-acct:hover { background: var(--surface-2); color: var(--text); border-color: var(--border); }
+    .cell-acct.drift { border-color: var(--idle); color: var(--idle); }
+    .cell.has-acct { border-color: color-mix(in srgb, var(--cell-accent) 45%, var(--border-subtle)); }
+    .cell.has-acct .cell-header { box-shadow: inset 2px 0 0 var(--cell-accent); }
+    .acct-menu { min-width: 250px; }
+    .acct-row { align-items: center; }
+    .acct-dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; }
+    .acct-body { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+    .acct-label { font-size: 12.5px; color: var(--text); }
+    .acct-email { font-size: 11px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .acct-row.current { background: var(--accent-soft); }
+
+    .prof-row { display: flex; align-items: flex-start; gap: 10px; padding: 9px 0; border-top: 1px solid var(--border-subtle); }
+    .prof-color { flex: 0 0 auto; width: 28px; height: 28px; padding: 0; background: none; border: 1px solid var(--border); border-radius: var(--radius-sm); cursor: pointer; }
+    .prof-body { min-width: 0; flex: 1 1 auto; display: flex; flex-direction: column; gap: 2px; }
+    .prof-label { background: var(--inset); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 4px 7px; font-size: 12.5px; }
+    .prof-email { font-size: 11.5px; color: var(--text-2); }
+    .prof-path { font-size: 11px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
     /* Glow */
     .cell.glow-idle {
       border-color: var(--idle);
@@ -281,12 +314,29 @@
       50%      { box-shadow: 0 0 0 3px color-mix(in srgb, var(--permission) 80%, transparent), 0 0 22px 5px color-mix(in srgb, var(--permission) 50%, transparent); border-color: var(--permission); }
     }
 
+    /* Arrival animation: sessions resumed in bulk land one at a time (see STAGGER_MS in
+       renderer.js) so a multi-session import reads as several distinct openings, not one flash.
+       The accent ring fades out via .cell's existing border/shadow transition. */
+    @keyframes cellArrive {
+      0%   { transform: translateY(9px) scale(.985); opacity: .35; }
+      60%  { transform: translateY(0) scale(1); opacity: 1; }
+      100% { transform: none; opacity: 1; }
+    }
+    .cell.arriving {
+      animation: cellArrive .45s cubic-bezier(.2,.8,.3,1); z-index: 2;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 60%, transparent),
+                  0 0 20px 3px color-mix(in srgb, var(--accent) 34%, transparent);
+    }
+
     /* ===== Overlays ====================================================== */
-    #home-overlay, #import-overlay, #settings-overlay {
+    #home-overlay, #import-overlay, #settings-overlay, #overflow-overlay, #port-overlay {
       position: fixed; inset: 0; background: color-mix(in srgb, var(--bg) 78%, rgba(0,0,0,.85));
       backdrop-filter: blur(3px); display: none; align-items: center; justify-content: center; z-index: 30;
     }
-    #home-overlay.open, #import-overlay.open, #settings-overlay.open { display: flex; }
+    #home-overlay.open, #import-overlay.open, #settings-overlay.open, #overflow-overlay.open, #port-overlay.open { display: flex; }
+    .ovf-remember { display: flex; align-items: center; gap: 8px; margin-top: 16px; font-size: 12.5px; color: var(--text-2); cursor: pointer; }
+    .ovf-opt { font-size: 11.5px; color: var(--text-3); margin-top: 3px; line-height: 1.45; }
     /* Launcher window: only the home page is visible, no toolbar/grid behind it. */
     body.home-mode #toolbar, body.home-mode #main-row { display: none; }
     body.home-mode #home-overlay { background: var(--bg); backdrop-filter: none; }
@@ -460,6 +510,39 @@
     </div>
   </div>
 
+  <!-- Asked before an account switch carries a live conversation across, so porting is explicit. -->
+  <div id="port-overlay">
+    <div class="import-card" style="width:540px" role="dialog" aria-label="Move session to another account">
+      <div class="import-head">🔀 <span>Move this session to another account?</span></div>
+      <p class="import-sub" id="port-desc"></p>
+      <div class="ovf-opt"><b>Proceed</b> — copy the conversation across and resume it as the new account. The original stays where it is.</div>
+      <div class="ovf-opt"><b>Start new session</b> — switch this cell to the new account and begin fresh. Nothing is copied.</div>
+      <label class="ovf-remember"><input type="checkbox" id="port-remember" /> Save my preference, don't ask again (change it in Settings)</label>
+      <div class="import-foot">
+        <span class="spacer"></span>
+        <button class="ghost-btn" id="port-cancel">Cancel</button>
+        <button class="ghost-btn" id="port-fresh">Start new session</button>
+        <button class="big-btn" id="port-proceed">Proceed</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Asked when a bulk resume selects more sessions than this window's grid can show at once. -->
+  <div id="overflow-overlay">
+    <div class="import-card" style="width:520px" role="dialog" aria-label="More sessions than fit">
+      <div class="import-head">🗂 <span>More sessions than this window fits</span></div>
+      <p class="import-sub" id="ovf-desc"></p>
+      <div class="ovf-opt"><b>Extra windows</b> — each stays visible in its own grid.</div>
+      <div class="ovf-opt"><b>Tabs here</b> — everything stays in this window, stacked behind the panes.</div>
+      <label class="ovf-remember"><input type="checkbox" id="ovf-remember" /> Remember my choice (change it in Settings)</label>
+      <div class="import-foot">
+        <span class="spacer"></span>
+        <button class="ghost-btn" id="ovf-tabs">Stack as tabs here</button>
+        <button class="big-btn" id="ovf-windows">Open extra windows</button>
+      </div>
+    </div>
+  </div>
+
   <div id="settings-overlay">
     <div class="panel" role="dialog" aria-label="Settings">
       <h2>Settings</h2>
@@ -526,6 +609,38 @@
           <div class="hint">Pick specific Claude Code sessions from any project folder. Each resumes in its own folder.</div>
         </div>
         <button class="btn accent" id="import-open">Choose sessions…</button>
+      </div>
+      <div class="row">
+        <div class="grow">
+          <label class="main" for="set-overflow">When more sessions are selected than fit</label>
+          <div class="hint">used when a bulk resume exceeds this window's grid</div>
+        </div>
+        <select id="set-overflow">
+          <option value="">Ask me each time</option>
+          <option value="windows">Open extra windows</option>
+          <option value="tabs">Stack as tabs here</option>
+        </select>
+      </div>
+
+      <div class="section-title">Claude accounts</div>
+      <div class="row">
+        <div class="grow">
+          <label class="main">Config directories</label>
+          <div class="hint">Each directory is a separate Claude login (<code>CLAUDE_CONFIG_DIR</code>). Cells show a coloured badge for the account they run as; click it to move a session to another account.</div>
+        </div>
+        <button class="btn accent" id="prof-add">Add dir…</button>
+      </div>
+      <div id="prof-list"></div>
+      <div class="row">
+        <div class="grow">
+          <label class="main" for="set-port">When switching a session to another account</label>
+          <div class="hint">whether the conversation is carried across or a new one is started</div>
+        </div>
+        <select id="set-port">
+          <option value="">Ask me each time</option>
+          <option value="port">Port the session over</option>
+          <option value="fresh">Start a new session</option>
+        </select>
       </div>
 
       <div class="section-title">Claude Code hooks</div>

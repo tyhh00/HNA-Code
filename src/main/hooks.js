@@ -8,16 +8,19 @@ const platform = require('./platform');
 function claudeDir() {
   return process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
 }
-function settingsPath() {
-  return path.join(claudeDir(), 'settings.json');
+// `dir` targets one specific Claude profile. Multi-account setups install the same hooks into EVERY
+// profile — a profile without them emits no signals, which means no glow and (worse) no session_id,
+// so cells running under it would never persist or resume.
+function settingsPath(dir) {
+  return path.join(dir || claudeDir(), 'settings.json');
 }
 
-function readSettings() {
-  try { return JSON.parse(fs.readFileSync(settingsPath(), 'utf8')); }
+function readSettings(dir) {
+  try { return JSON.parse(fs.readFileSync(settingsPath(dir), 'utf8')); }
   catch (_) { return {}; }
 }
-function writeSettings(obj) {
-  const p = settingsPath();
+function writeSettings(obj, dir) {
+  const p = settingsPath(dir);
   fs.mkdirSync(path.dirname(p), { recursive: true });
   const tmp = p + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(obj, null, 2));
@@ -50,8 +53,8 @@ function plan(scriptPath) {
   };
 }
 
-function installHooks(scriptPath) {
-  const s = readSettings();
+function installHooks(scriptPath, dir) {
+  const s = readSettings(dir);
   s.hooks = s.hooks || {};
   const p = plan(scriptPath);
   for (const [event, entries] of Object.entries(p)) {
@@ -60,21 +63,21 @@ function installHooks(scriptPath) {
     const kept = existing.filter((g) => !isOurs(g, scriptPath));
     s.hooks[event] = kept.concat(entries);
   }
-  writeSettings(s);
-  return settingsPath();
+  writeSettings(s, dir);
+  return settingsPath(dir);
 }
 
-function uninstallHooks(scriptPath) {
-  const s = readSettings();
-  if (!s.hooks) return settingsPath();
+function uninstallHooks(scriptPath, dir) {
+  const s = readSettings(dir);
+  if (!s.hooks) return settingsPath(dir);
   for (const event of Object.keys(s.hooks)) {
     if (!Array.isArray(s.hooks[event])) continue;
     s.hooks[event] = s.hooks[event].filter((g) => !isOurs(g, scriptPath));
     if (s.hooks[event].length === 0) delete s.hooks[event];
   }
   if (s.hooks && Object.keys(s.hooks).length === 0) delete s.hooks;
-  writeSettings(s);
-  return settingsPath();
+  writeSettings(s, dir);
+  return settingsPath(dir);
 }
 
 module.exports = { installHooks, uninstallHooks, settingsPath, command };
