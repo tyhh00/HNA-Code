@@ -7,8 +7,7 @@
 > 🧭 **Built for Claude Code today, designed for more.** The vision is to make agentic coding — Claude Code, Codex, any harness — dramatically more productive by giving you one place to command a whole fleet of agents. Claude Code is the first fully supported harness.
 
 <p align="center">
-  <!-- HERO GIF: the glowing grid in action (rendered by the demo pipeline into docs/media) -->
-  <img src="docs/media/hero.gif" alt="A grid of Claude Code sessions in HNA-Code; a cell glows amber the moment its agent finishes and is waiting on you" width="100%" />
+  <img src="docs/media/hero.png" alt="HNA-Code running twelve live Claude Code sessions in a 3x4 grid, each a real terminal, with per-cell CPU and memory in the header" width="100%" />
 </p>
 
 <p align="center">
@@ -22,39 +21,55 @@
 
 When you run more than one or two coding agents, the terminal stops scaling. You lose track of which session is waiting on you, which is mid-task, and which folder each one belongs to — and closing the window loses the lot.
 
-HNA-Code is a desktop app that turns that chaos into a **board**. Every cell is a real terminal running `claude`, laid out in a grid you choose. A cell **glows** the instant its agent finishes a turn or needs a permission — so you tend the ones that need you and let the rest work. Close the app and reopen it: every conversation resumes exactly where it left off, in its own folder, with its name and glow intact.
+HNA-Code is a desktop app that turns that chaos into a **board**. Every cell is a real terminal running `claude`, laid out in a grid you choose. A cell **glows** the instant its agent finishes a turn or needs a permission — so you tend the ones that need you and let the rest work.
 
-And because heavy users run more than one Claude account, HNA-Code makes accounts first-class: each cell shows which account it's running as, and you can move a session to another account when one runs low — without losing the conversation.
+**The board is stateful.** Close the window — or restart your whole machine — and reopening loads every session back, in the same order, each resumed exactly where it left off in its own folder, with its name and glow intact. You move fast with a dozen agents and never lose your place; a reboot costs you nothing.
 
-## Demo
+And because heavy users run more than one Claude subscription, HNA-Code makes accounts first-class: it auto-detects your Claude config directories (your work sub, your personal sub — add more anytime), shows which one each cell is running as, and lets you **port a live session to another subscription** with one click — so when one account hits its usage limit mid-task, you carry the whole conversation over and keep going.
 
-The clips below are the real UI — recorded and rendered by the pipeline in [`demo/`](demo).
+## Tour
 
-**Glow when a session needs you.** A session finishes, its cell glows **amber**, and it jumps to the top of the **needs-you** sidebar. Breathing **blue** means it's blocked on a permission. Type into a cell and its glow clears — and the whole board resumes after a restart. *(That's the hero above.)*
+**Glow when a session needs you.** In the board above, a cell glows **amber** the moment its agent finishes and is waiting on you, and jumps to the top of the **needs-you** sidebar. Breathing **blue** means it's blocked on a permission. Type into a cell and its glow clears.
 
-### Many accounts, one board
-
-<p align="center">
-  <img src="docs/media/accounts.gif" alt="Clicking a cell's account badge opens a menu; choosing another account moves the live session there and the badge and cell tint change colour." width="90%" />
-</p>
-
-Each cell carries a colour-coded badge for the Claude account it runs as. Click it to move that session to another account — HNA-Code copies the conversation across, resumes it there, and keeps the original as a rollback. Colour-code accounts so you can tell at a glance which one each cell is spending.
-
-### Bring your existing sessions in
+### Command every agent at once
 
 <p align="center">
-  <img src="docs/media/import.gif" alt="Importing existing Claude sessions; they cascade into the grid one at a time, and an overflow prompt asks where extras should go." width="90%" />
+  <img src="docs/media/broadcast.png" alt="The broadcast bar open at the top; every cell shows the same 'trust this folder?' prompt, ready to be answered across the whole board in one keystroke" width="100%" />
 </p>
 
-Point HNA-Code at a folder and it finds the Claude sessions you already have there. Resume them into the grid in one click — they open one at a time so you can see the board fill up, and when there are more than the grid fits, it asks whether to open extra windows or stack the rest as tabs.
+Broadcast types once and sends to every cell (`Ctrl+Shift+B`). Kick off the same task in every agent, or clear a prompt like Claude's "trust this folder?" across the whole board at once — no clicking through twelve windows.
 
-### Layouts and the needs-you sidebar
+### Lay it out for any screen
 
 <p align="center">
-  <img src="docs/media/layouts.gif" alt="Switching between grid layouts and jumping between sessions from the sidebar." width="90%" />
+  <img src="docs/media/layouts.png" alt="A 6x2 portrait layout filling a tall window with twelve sessions stacked in two columns" width="100%" />
 </p>
 
-Landscape layouts (2×4, 3×4, 4×4) and portrait layouts for vertical monitors (4×2, 6×2, 8×2, 6×1). Shrinking the grid never kills a session — orphaned ones fold into tabs. The sidebar pins whatever needs you to the top and jumps you straight there.
+Landscape layouts (2×4, 3×4, 4×4) for a normal monitor, portrait layouts (6×2, 8×2, 4×2, 6×1) for a vertical one. Shrinking the grid never kills a session — orphaned ones fold into tabs.
+
+### Stateful windows — restart-proof
+
+<p align="center">
+  <img src="docs/media/windows.png" alt="The windows dropdown listing tanyo-1 (open), tanyo-2 (this), and tanyo-3 (closed) for the current folder" width="62%" />
+</p>
+
+Every window is stateful and scoped to its folder. Close one — or restart your machine — and reopening loads all its sessions back, in the same order, each resumed where it left off. Track and reopen windows per folder from the dropdown. You move fast with a dozen agents and never lose your place.
+
+### Many accounts, one board — and Settings
+
+<p align="center">
+  <img src="docs/media/settings.png" alt="The Settings panel: theme swatches, glow toggle, custom done/permission sounds, launch command, session import, and the Claude accounts list with a port-on-switch option" width="52%" />
+</p>
+
+HNA-Code **auto-detects your Claude subscriptions** — a work login, a personal one — and you add more here. Each cell badges the account it runs as; click the badge to **port a live session to another subscription** when one hits its usage limit, and keep going where you left off. Settings is also where you enable **glow**, attach a **sound** to "done" / "needs permission" (so you hear which board to return to), pick a **theme**, and turn on the **performance view** to spot heavy sessions.
+
+### Themes
+
+<p align="center">
+  <img src="docs/media/theme.png" alt="The same grid in the warm Claude theme, with per-cell CPU and memory shown in each header" width="100%" />
+</p>
+
+Recolour the whole app — graphite, Claude, midnight, or light — and flip on per-cell CPU / RAM to see which sessions are working hardest.
 
 ## Why HNA-Code
 
@@ -88,13 +103,16 @@ Glow and resume work out of the box — the app installs its Claude Code hooks o
 
 ## Features
 
-- **Grid of live terminals.** One real PTY per cell running `claude`. Landscape and portrait layouts; shrinking the grid folds orphaned sessions into tabs instead of killing them.
-- **Glow when a session needs you.** Amber when a turn ends, breathing blue when a permission is pending; typing clears it. Optional per-event sounds.
-- **Autosave and resume.** Every cell resumes its exact conversation (`claude --resume`) in its original folder, with its name and glow, after a restart or crash.
-- **Multiple Claude accounts.** Auto-discovers `CLAUDE_CONFIG_DIR` profiles, shows each cell's account as a colour-coded badge, and moves a session between accounts on click. Add or hide directories and set per-account colours in Settings.
-- **One-click import.** Pull the Claude sessions already in a folder into the grid — all, a selection, or only ones after a date — with staggered opening and an overflow prompt.
+- **Stateful windows.** Close a window or restart your machine — reopening restores every session, in the same order, each resumed with `claude --resume` in its own folder, with its name and glow. Your progress is never lost.
+- **Grid of live terminals.** One real PTY per cell running `claude`. Landscape layouts (2×4, 3×4, 4×4) for normal screens and portrait layouts (6×2, 8×2, 4×2, 6×1) for a vertical monitor. Shrinking the grid folds orphaned sessions into tabs instead of killing them.
+- **Glow when a session needs you.** Amber when a turn ends, breathing blue when a permission is pending; typing clears it.
+- **Sounds so you know where to return.** Attach your own sound to "done" and "needs permission" — when a board across the room finishes, you hear which one to go back to.
+- **Broadcast to every agent at once.** Type once, send to every cell (`Ctrl+Shift+B`) — kick off the same task everywhere, or answer a prompt like "trust this folder?" across the whole board in one keystroke.
+- **Multiple Claude subscriptions.** Auto-detects your `CLAUDE_CONFIG_DIR` profiles (work + personal), badges each cell with the account it runs as, and ports a live session to another subscription on click — your escape hatch when one hits its usage limit. Add or hide directories and set per-account colours in Settings.
+- **Zero-friction setup.** Launch on a folder that already has Claude sessions and HNA-Code offers to import them — all, a selection, or only ones after a date — opening them one at a time with an overflow prompt when they don't all fit.
 - **Needs-you-first sidebar.** A live list of your real sessions, whatever needs you pinned on top, click to jump.
-- **Editable names, recent folders, open-in-VS-Code, themeable, broadcast-to-all-cells.**
+- **Performance view.** Toggle per-cell and per-window CPU / RAM to see which sessions are heavy.
+- **Themes, editable names, recent folders, open-in-VS-Code.**
 - **Your config stays yours.** Glow hooks are added to each account's `settings.json`; only HNA-Code's entries are touched, and you can disconnect.
 
 ## How it works
