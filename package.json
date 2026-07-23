@@ -1,6 +1,6 @@
 {
   "name": "hna-code",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "HNA-Code (Humans and Agents Code): run many Claude Code sessions in a configurable grid, glow when a session is waiting on you, resume the whole board after a restart.",
   "main": "src/main/main.js",
   "author": "tyhh00",

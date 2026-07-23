@@ -2,7 +2,7 @@
 
 <p align="center"><b>Humans and Agents Code.</b> Run many <a href="https://claude.ai/code">Claude Code</a> sessions at once in a live grid — each cell glows the moment its agent needs you, across multiple accounts, and the whole board resumes after a restart.</p>
 
-> 🔥 **v0.3.0 — Multiple Claude accounts.** Run several Claude logins side by side, see which account each cell is burning, and move a live session between accounts with one click. [Download](https://github.com/tyhh00/HNA-Code/releases/tag/v0.3.0) · [Release notes](https://github.com/tyhh00/HNA-Code/releases/tag/v0.3.0)
+> 🔥 **v0.4.0 — Images in cells + per-cell reload.** Drag or paste images straight into any cell like a real terminal, restart a cell's claude in place with the new ⟳ button (picks up new MCP servers, keeps the conversation), and bulk-resume now adds sessions without clobbering what's open. [Download](https://github.com/tyhh00/HNA-Code/releases/tag/v0.4.0) · [Release notes](https://github.com/tyhh00/HNA-Code/releases/tag/v0.4.0)
 >
 > 🧭 **Built for Claude Code today, designed for more.** The vision is to make agentic coding — Claude Code, Codex, any harness — dramatically more productive by giving you one place to command a whole fleet of agents. Claude Code is the first fully supported harness.
 
